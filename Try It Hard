@@ -1,0 +1,2126 @@
+
+
+--========================================================
+
+-- AESTHETIC STUDIO V3
+
+-- 166 Filters + Favourites + Sky Matching
+
+-- Client-side visual effects
+
+--========================================================
+
+local Players = game:GetService("Players")
+
+local Lighting = game:GetService("Lighting")
+
+local UserInputService = game:GetService("UserInputService")
+
+local StarterGui = game:GetService("StarterGui")
+
+local player = Players.LocalPlayer
+
+local playerGui = player:WaitForChild("PlayerGui")
+
+--========================================================
+
+-- CLEAN UP PREVIOUS INSTANCE
+
+--========================================================
+
+if _G.AestheticStudioCleanup then
+
+    pcall(_G.AestheticStudioCleanup)
+
+end
+
+local running = true
+
+local connections = {}
+
+local favourites = {}
+
+local currentTab = "All"
+
+local currentCategory = "All"
+
+local searchText = ""
+
+local guiVisible = true
+
+local minimized = false
+
+local function connect(signal, callback)
+
+    local connection = signal:Connect(callback)
+
+    table.insert(connections, connection)
+
+    return connection
+
+end
+
+--========================================================
+
+-- SAVE ORIGINAL LIGHTING SETTINGS
+
+--========================================================
+
+local originalLighting = {
+
+    Ambient = Lighting.Ambient,
+
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+
+    Brightness = Lighting.Brightness,
+
+    ExposureCompensation = Lighting.ExposureCompensation,
+
+    ClockTime = Lighting.ClockTime,
+
+    FogColor = Lighting.FogColor,
+
+    FogEnd = Lighting.FogEnd,
+
+    FogStart = Lighting.FogStart,
+
+    GlobalShadows = Lighting.GlobalShadows
+
+}
+
+local originalAtmosphere = nil
+
+local existingAtmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
+
+local createdAtmosphere = false
+
+if existingAtmosphere then
+
+    originalAtmosphere = {
+
+        object = existingAtmosphere,
+
+        Color = existingAtmosphere.Color,
+
+        Decay = existingAtmosphere.Decay,
+
+        Density = existingAtmosphere.Density,
+
+        Haze = existingAtmosphere.Haze,
+
+        Glare = existingAtmosphere.Glare,
+
+        Offset = existingAtmosphere.Offset
+
+    }
+
+else
+
+    existingAtmosphere = Instance.new("Atmosphere")
+
+    existingAtmosphere.Name = "AS_Atmosphere"
+
+    existingAtmosphere.Parent = Lighting
+
+    createdAtmosphere = true
+
+end
+
+--========================================================
+
+-- CREATE VISUAL EFFECTS
+
+--========================================================
+
+local function createEffect(className, name)
+
+    local old = Lighting:FindFirstChild(name)
+
+    if old then
+
+        old:Destroy()
+
+    end
+
+    local effect = Instance.new(className)
+
+    effect.Name = name
+
+    effect.Parent = Lighting
+
+    return effect
+
+end
+
+local colorEffect = createEffect("ColorCorrectionEffect", "AS_Color")
+
+local bloomEffect = createEffect("BloomEffect", "AS_Bloom")
+
+local raysEffect = createEffect("SunRaysEffect", "AS_Rays")
+
+local depthEffect = createEffect("DepthOfFieldEffect", "AS_Depth")
+
+colorEffect.Enabled = false
+
+bloomEffect.Enabled = false
+
+raysEffect.Enabled = false
+
+depthEffect.Enabled = false
+
+--========================================================
+
+-- FILTER DATA
+
+--========================================================
+
+local filters = {}
+
+local function addFilter(name, category, tint, saturation, contrast, brightness)
+
+    table.insert(filters, {
+
+        name = name,
+
+        category = category,
+
+        tint = tint,
+
+        saturation = saturation or 0.1,
+
+        contrast = contrast or 0.1,
+
+        brightness = brightness or 0,
+
+        id = #filters + 1
+
+    })
+
+end
+
+-- Original 16 filters
+
+local originalFilters = {
+
+    {"Cinematic", "Cinematic", Color3.fromRGB(255, 220, 190), 0.1, 0.25, -0.03},
+
+    {"Warm Sunset", "Warm", Color3.fromRGB(255, 170, 105), 0.15, 0.15, 0.02},
+
+    {"Cold Winter", "Cold", Color3.fromRGB(175, 210, 255), -0.1, 0.2, 0},
+
+    {"Dreamy Pink", "Pink", Color3.fromRGB(255, 180, 215), 0.2, 0.05, 0.03},
+
+    {"Vintage Film", "Vintage", Color3.fromRGB(225, 195, 145), -0.15, 0.2, -0.02},
+
+    {"Dark Academia", "Dark", Color3.fromRGB(170, 145, 115), -0.2, 0.3, -0.08},
+
+    {"Soft Pastel", "Pastel", Color3.fromRGB(225, 220, 255), 0.1, -0.1, 0.04},
+
+    {"Golden Hour", "Warm", Color3.fromRGB(255, 205, 125), 0.25, 0.15, 0.04},
+
+    {"Blue Hour", "Blue", Color3.fromRGB(145, 185, 255), -0.05, 0.2, -0.02},
+
+    {"Moody Grey", "Grey", Color3.fromRGB(185, 190, 200), -0.35, 0.25, -0.05},
+
+    {"Lavender Dream", "Purple", Color3.fromRGB(200, 175, 255), 0.15, 0.05, 0.03},
+
+    {"Forest Green", "Nature", Color3.fromRGB(165, 220, 165), 0.1, 0.2, -0.02},
+
+    {"Neon Night", "Neon", Color3.fromRGB(190, 145, 255), 0.35, 0.3, 0.02},
+
+    {"Clean White", "Bright", Color3.fromRGB(245, 245, 255), -0.05, -0.05, 0.08},
+
+    {"Horror Atmosphere", "Horror", Color3.fromRGB(145, 165, 150), -0.4, 0.35, -0.12},
+
+    {"Soft Realistic", "Realistic", Color3.fromRGB(255, 245, 230), 0.05, 0.1, 0.01}
+
+}
+
+for _, data in ipairs(originalFilters) do
+
+    addFilter(
+
+        data[1], data[2], data[3],
+
+        data[4], data[5], data[6]
+
+    )
+
+end
+
+-- 15 categories, 10 filters per category = 150 filters
+
+local categories = {
+
+    {
+
+        name = "Warm",
+
+        palette = Color3.fromRGB(255, 175, 110),
+
+        sky = Color3.fromRGB(255, 190, 145),
+
+        decay = Color3.fromRGB(150, 95, 65),
+
+        names = {
+
+            "Amber Glow", "Honey Light", "Peach Sunset", "Soft Orange",
+
+            "Golden Warmth", "Autumn Light", "Warm Film", "Sunlit",
+
+            "Copper Glow", "Evening Gold"
+
+        }
+
+    },
+
+    {
+
+        name = "Cold",
+
+        palette = Color3.fromRGB(165, 210, 255),
+
+        sky = Color3.fromRGB(180, 215, 255),
+
+        decay = Color3.fromRGB(100, 135, 190),
+
+        names = {
+
+            "Arctic Blue", "Frozen World", "Ice Crystal", "Snowfall",
+
+            "Cold Morning", "Winter Sky", "Frosted Glass", "Glacier",
+
+            "Blue Frost", "Polar Light"
+
+        }
+
+    },
+
+    {
+
+        name = "Pink",
+
+        palette = Color3.fromRGB(255, 175, 215),
+
+        sky = Color3.fromRGB(255, 195, 220),
+
+        decay = Color3.fromRGB(180, 110, 150),
+
+        names = {
+
+            "Rose Dream", "Cotton Candy", "Blush Pink", "Pink Cloud",
+
+            "Cherry Blossom", "Rose Quartz", "Sweet Pink", "Bubblegum",
+
+            "Pastel Rose", "Pink Paradise"
+
+        }
+
+    },
+
+    {
+
+        name = "Purple",
+
+        palette = Color3.fromRGB(195, 160, 255),
+
+        sky = Color3.fromRGB(205, 180, 255),
+
+        decay = Color3.fromRGB(115, 90, 165),
+
+        names = {
+
+            "Purple Haze", "Violet Dream", "Lilac Sky", "Mystic Purple",
+
+            "Lavender Field", "Royal Violet", "Purple Moon", "Soft Lilac",
+
+            "Amethyst", "Twilight Purple"
+
+        }
+
+    },
+
+    {
+
+        name = "Blue",
+
+        palette = Color3.fromRGB(145, 190, 255),
+
+        sky = Color3.fromRGB(155, 195, 255),
+
+        decay = Color3.fromRGB(80, 110, 175),
+
+        names = {
+
+            "Ocean Blue", "Deep Sea", "Clear Sky", "Blue Mist",
+
+            "Azure", "Midnight Blue", "Blue Serenity", "Aqua Blue",
+
+            "Dream Blue", "Coastal Blue"
+
+        }
+
+    },
+
+    {
+
+        name = "Nature",
+
+        palette = Color3.fromRGB(160, 220, 155),
+
+        sky = Color3.fromRGB(185, 225, 185),
+
+        decay = Color3.fromRGB(90, 135, 90),
+
+        names = {
+
+            "Moss Green", "Forest Mist", "Emerald", "Spring Garden",
+
+            "Fresh Leaves", "Green Meadow", "Nature Glow", "Sage",
+
+            "Deep Forest", "Wild Garden"
+
+        }
+
+    },
+
+    {
+
+        name = "Vintage",
+
+        palette = Color3.fromRGB(220, 190, 145),
+
+        sky = Color3.fromRGB(220, 200, 165),
+
+        decay = Color3.fromRGB(145, 120, 85),
+
+        names = {
+
+            "Old Camera", "Retro Film", "Sepia Light", "Classic Film",
+
+            "Faded Memories", "Old Photograph", "Dusty Gold",
+
+            "Vintage Brown", "Analog Film", "Nostalgia"
+
+        }
+
+    },
+
+    {
+
+        name = "Dark",
+
+        palette = Color3.fromRGB(155, 155, 175),
+
+        sky = Color3.fromRGB(110, 115, 145),
+
+        decay = Color3.fromRGB(65, 65, 90),
+
+        names = {
+
+            "Dark Mood", "Shadow World", "Nightfall", "Dark Film",
+
+            "Midnight", "Low Exposure", "Dark Cinematic",
+
+            "Shadow Blue", "Black Mist", "Deep Shadows"
+
+        }
+
+    },
+
+    {
+
+        name = "Pastel",
+
+        palette = Color3.fromRGB(220, 215, 255),
+
+        sky = Color3.fromRGB(225, 220, 255),
+
+        decay = Color3.fromRGB(155, 150, 195),
+
+        names = {
+
+            "Pastel Heaven", "Soft Clouds", "Pastel World",
+
+            "Milky Pink", "Soft Lavender", "Pastel Blue",
+
+            "Pastel Peach", "Dreamy Sky", "Light Pastel", "Fairy Dust"
+
+        }
+
+    },
+
+    {
+
+        name = "Neon",
+
+        palette = Color3.fromRGB(195, 140, 255),
+
+        sky = Color3.fromRGB(120, 100, 190),
+
+        decay = Color3.fromRGB(65, 45, 125),
+
+        names = {
+
+            "Cyberpunk", "Neon City", "Electric Purple", "Night Lights",
+
+            "Neon Dreams", "Electric Blue", "Digital World",
+
+            "Neon Pink", "Future Glow", "Cyber Night"
+
+        }
+
+    },
+
+    {
+
+        name = "Grey",
+
+        palette = Color3.fromRGB(190, 195, 205),
+
+        sky = Color3.fromRGB(190, 195, 205),
+
+        decay = Color3.fromRGB(110, 115, 125),
+
+        names = {
+
+            "Silver Mist", "Monochrome", "Cloudy Day", "Grey Film",
+
+            "Soft Grey", "Concrete", "Overcast", "Steel",
+
+            "Foggy Morning", "Neutral Grey"
+
+        }
+
+    },
+
+    {
+
+        name = "Bright",
+
+        palette = Color3.fromRGB(250, 245, 255),
+
+        sky = Color3.fromRGB(245, 245, 255),
+
+        decay = Color3.fromRGB(180, 185, 200),
+
+        names = {
+
+            "Pure White", "High Key", "Bright Day", "Clean Light",
+
+            "White Dream", "Airy", "Soft Exposure", "Light Room",
+
+            "Bright Heaven", "Crystal Clear"
+
+        }
+
+    },
+
+    {
+
+        name = "Horror",
+
+        palette = Color3.fromRGB(135, 155, 140),
+
+        sky = Color3.fromRGB(105, 125, 110),
+
+        decay = Color3.fromRGB(45, 65, 50),
+
+        names = {
+
+            "Abandoned", "Haunted Fog", "Creepy Night", "Dead Forest",
+
+            "Eerie Green", "Dark Fog", "Haunted House",
+
+            "Night Terror", "Ghost Town", "Horror Film"
+
+        }
+
+    },
+
+    {
+
+        name = "Realistic",
+
+        palette = Color3.fromRGB(245, 235, 220),
+
+        sky = Color3.fromRGB(220, 225, 230),
+
+        decay = Color3.fromRGB(150, 155, 160),
+
+        names = {
+
+            "Natural Light", "True Color", "Real Camera",
+
+            "Soft Daylight", "Neutral Film", "Natural Skin",
+
+            "Balanced Light", "Clear Realism", "Photo Real",
+
+            "Studio Natural"
+
+        }
+
+    },
+
+    {
+
+        name = "Cinematic",
+
+        palette = Color3.fromRGB(230, 195, 160),
+
+        sky = Color3.fromRGB(185, 195, 205),
+
+        decay = Color3.fromRGB(95, 110, 125),
+
+        names = {
+
+            "Movie Scene", "Teal Orange", "Film Director",
+
+            "Cinema Gold", "Epic Scene", "Movie Night",
+
+            "Wide Screen", "Drama Film", "Cinematic Warm",
+
+            "Cinematic Blue"
+
+        }
+
+    }
+
+}
+
+for _, category in ipairs(categories) do
+
+    for i, name in ipairs(category.names) do
+
+        local variation = (i - 5) \* 0.025
+
+        local tint = category.palette:Lerp(Color3.new(1, 1, 1), variation)
+
+        addFilter(
+
+            name,
+
+            category.name,
+
+            tint,
+
+            (i - 5) \* 0.035,
+
+            0.12 + (i \* 0.012),
+
+            (i - 5) \* 0.008
+
+        )
+
+    end
+
+end
+
+--========================================================
+
+-- CATEGORY SKY SETTINGS
+
+--========================================================
+
+local skySettings = {}
+
+for _, category in ipairs(categories) do
+
+    skySettings[category.name] = {
+
+        color = category.sky,
+
+        decay = category.decay
+
+    }
+
+end
+
+skySettings.Cinematic = {
+
+    color = Color3.fromRGB(185, 195, 205),
+
+    decay = Color3.fromRGB(95, 110, 125)
+
+}
+
+skySettings.Warm = {
+
+    color = Color3.fromRGB(255, 190, 145),
+
+    decay = Color3.fromRGB(150, 95, 65)
+
+}
+
+skySettings.Cold = {
+
+    color = Color3.fromRGB(180, 215, 255),
+
+    decay = Color3.fromRGB(100, 135, 190)
+
+}
+
+skySettings.Pink = {
+
+    color = Color3.fromRGB(255, 195, 220),
+
+    decay = Color3.fromRGB(180, 110, 150)
+
+}
+
+skySettings.Purple = {
+
+    color = Color3.fromRGB(205, 180, 255),
+
+    decay = Color3.fromRGB(115, 90, 165)
+
+}
+
+skySettings.Blue = {
+
+    color = Color3.fromRGB(155, 195, 255),
+
+    decay = Color3.fromRGB(80, 110, 175)
+
+}
+
+skySettings.Nature = {
+
+    color = Color3.fromRGB(185, 225, 185),
+
+    decay = Color3.fromRGB(90, 135, 90)
+
+}
+
+skySettings.Vintage = {
+
+    color = Color3.fromRGB(220, 200, 165),
+
+    decay = Color3.fromRGB(145, 120, 85)
+
+}
+
+skySettings.Dark = {
+
+    color = Color3.fromRGB(110, 115, 145),
+
+    decay = Color3.fromRGB(65, 65, 90)
+
+}
+
+skySettings.Pastel = {
+
+    color = Color3.fromRGB(225, 220, 255),
+
+    decay = Color3.fromRGB(155, 150, 195)
+
+}
+
+skySettings.Neon = {
+
+    color = Color3.fromRGB(120, 100, 190),
+
+    decay = Color3.fromRGB(65, 45, 125)
+
+}
+
+skySettings.Grey = {
+
+    color = Color3.fromRGB(190, 195, 205),
+
+    decay = Color3.fromRGB(110, 115, 125)
+
+}
+
+skySettings.Bright = {
+
+    color = Color3.fromRGB(245, 245, 255),
+
+    decay = Color3.fromRGB(180, 185, 200)
+
+}
+
+skySettings.Horror = {
+
+    color = Color3.fromRGB(105, 125, 110),
+
+    decay = Color3.fromRGB(45, 65, 50)
+
+}
+
+skySettings.Realistic = {
+
+    color = Color3.fromRGB(220, 225, 230),
+
+    decay = Color3.fromRGB(150, 155, 160)
+
+}
+
+--========================================================
+
+-- APPLY FILTER
+
+--========================================================
+
+local selectedFilter = nil
+
+local function applySky(category)
+
+    local settings = skySettings[category]
+
+    if not settings then
+
+        return
+
+    end
+
+    existingAtmosphere.Color = settings.color
+
+    existingAtmosphere.Decay = settings.decay
+
+    existingAtmosphere.Density = 0.25
+
+    existingAtmosphere.Haze = 1.2
+
+    existingAtmosphere.Glare = 0.1
+
+    Lighting.Ambient = settings.decay:Lerp(settings.color, 0.35)
+
+    Lighting.OutdoorAmbient = settings.color:Lerp(settings.decay, 0.25)
+
+end
+
+local function resetVisuals()
+
+    colorEffect.Enabled = false
+
+    bloomEffect.Enabled = false
+
+    raysEffect.Enabled = false
+
+    depthEffect.Enabled = false
+
+    Lighting.Ambient = originalLighting.Ambient
+
+    Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+
+    Lighting.Brightness = originalLighting.Brightness
+
+    Lighting.ExposureCompensation = originalLighting.ExposureCompensation
+
+    Lighting.ClockTime = originalLighting.ClockTime
+
+    Lighting.FogColor = originalLighting.FogColor
+
+    Lighting.FogEnd = originalLighting.FogEnd
+
+    Lighting.FogStart = originalLighting.FogStart
+
+    Lighting.GlobalShadows = originalLighting.GlobalShadows
+
+    if originalAtmosphere then
+
+        local obj = originalAtmosphere.object
+
+        if obj and obj.Parent then
+
+            obj.Color = originalAtmosphere.Color
+
+            obj.Decay = originalAtmosphere.Decay
+
+            obj.Density = originalAtmosphere.Density
+
+            obj.Haze = originalAtmosphere.Haze
+
+            obj.Glare = originalAtmosphere.Glare
+
+            obj.Offset = originalAtmosphere.Offset
+
+        end
+
+    elseif createdAtmosphere and existingAtmosphere then
+
+        existingAtmosphere.Density = 0
+
+        existingAtmosphere.Haze = 0
+
+        existingAtmosphere.Glare = 0
+
+    end
+
+end
+
+local function applyFilter(filter)
+
+    if not filter then
+
+        return
+
+    end
+
+    selectedFilter = filter
+
+    resetVisuals()
+
+    colorEffect.Enabled = true
+
+    colorEffect.TintColor = filter.tint
+
+    colorEffect.Saturation = filter.saturation
+
+    colorEffect.Contrast = filter.contrast
+
+    colorEffect.Brightness = filter.brightness
+
+    bloomEffect.Enabled = true
+
+    bloomEffect.Intensity = 0.25
+
+    bloomEffect.Size = 24
+
+    bloomEffect.Threshold = 1.1
+
+    raysEffect.Enabled = true
+
+    raysEffect.Intensity = 0.08
+
+    raysEffect.Spread = 0.8
+
+    depthEffect.Enabled = false
+
+    applySky(filter.category)
+
+end
+
+--========================================================
+
+
+--========================================================
+-- PLAYER ESP CORE
+--========================================================
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local espToggleButton = nil
+local ESPEnabled = true
+local ESPObjects = {}
+local ESPPlayerConnections = {}
+
+local ESP_COLOR = Color3.fromRGB(255, 65, 65)
+local ESP_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
+local DISPLAY_NAME_SIZE = 14
+local DISPLAY_NAME_WIDTH = 220
+local DISPLAY_NAME_HEIGHT = 28
+
+local function removePlayerESP(targetPlayer)
+    local data = ESPObjects[targetPlayer]
+    if not data then return end
+
+    if data.Highlight then data.Highlight:Destroy() end
+    if data.Billboard then data.Billboard:Destroy() end
+    ESPObjects[targetPlayer] = nil
+end
+
+local function createPlayerESP(targetPlayer)
+    if not running or targetPlayer == LocalPlayer then return end
+
+    local character = targetPlayer.Character
+    if not character then return end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not root then return end
+
+    local old = ESPObjects[targetPlayer]
+    if old and old.Character == character then
+        old.Highlight.Enabled = ESPEnabled
+        old.Billboard.Enabled = ESPEnabled
+        if old.Label then
+            old.Label.Text = targetPlayer.DisplayName
+        end
+        return
+    end
+
+    removePlayerESP(targetPlayer)
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "UniversalStudio_PlayerHighlight"
+    highlight.Adornee = character
+    highlight.FillColor = ESP_COLOR
+    highlight.OutlineColor = Color3.new(1, 1, 1)
+    highlight.FillTransparency = 0.65
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Enabled = ESPEnabled
+    highlight.Parent = character
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "UniversalStudio_PlayerName"
+    billboard.Adornee = root
+    billboard.Size = UDim2.fromOffset(DISPLAY_NAME_WIDTH, DISPLAY_NAME_HEIGHT)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.AlwaysOnTop = true
+    billboard.Enabled = ESPEnabled
+    billboard.Parent = playerGui
+
+    local label = Instance.new("TextLabel")
+    label.Name = "DisplayName"
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundTransparency = 1
+    label.Text = targetPlayer.DisplayName
+    label.TextColor3 = ESP_TEXT_COLOR
+    label.TextStrokeColor3 = Color3.new(0, 0, 0)
+    label.TextStrokeTransparency = 0
+    label.TextScaled = false
+    label.TextSize = DISPLAY_NAME_SIZE
+    label.TextWrapped = false
+    label.TextTruncate = Enum.TextTruncate.AtEnd
+    label.Font = Enum.Font.GothamBold
+    label.Parent = billboard
+
+    ESPObjects[targetPlayer] = {
+        Character = character,
+        Highlight = highlight,
+        Billboard = billboard,
+        Label = label
+    }
+end
+
+local function refreshPlayerESP()
+    for _, targetPlayer in ipairs(Players:GetPlayers()) do
+        if targetPlayer ~= LocalPlayer then
+            if ESPEnabled then
+                createPlayerESP(targetPlayer)
+            else
+                local data = ESPObjects[targetPlayer]
+                if data then
+                    data.Highlight.Enabled = false
+                    data.Billboard.Enabled = false
+                end
+            end
+        end
+    end
+end
+
+local function togglePlayerESP()
+    if not running then return end
+    ESPEnabled = not ESPEnabled
+    refreshPlayerESP()
+    if espToggleButton then
+        espToggleButton.Text = ESPEnabled and "PLAYER ESP: ON" or "PLAYER ESP: OFF"
+    end
+end
+
+local function setupESPPlayer(targetPlayer)
+    if targetPlayer == LocalPlayer or ESPPlayerConnections[targetPlayer] then
+        return
+    end
+
+    local playerConnections = {}
+    ESPPlayerConnections[targetPlayer] = playerConnections
+
+    table.insert(playerConnections, targetPlayer.CharacterAdded:Connect(function(character)
+        removePlayerESP(targetPlayer)
+        if not running or not ESPEnabled then return end
+
+        task.spawn(function()
+            local root = character:WaitForChild("HumanoidRootPart", 10)
+            if root and running and ESPEnabled then
+                createPlayerESP(targetPlayer)
+            end
+        end)
+    end))
+
+    table.insert(playerConnections, targetPlayer.CharacterRemoving:Connect(function()
+        removePlayerESP(targetPlayer)
+    end))
+
+    if targetPlayer.Character and ESPEnabled then
+        createPlayerESP(targetPlayer)
+    end
+end
+
+local function removeESPPlayerConnections(targetPlayer)
+    removePlayerESP(targetPlayer)
+    local list = ESPPlayerConnections[targetPlayer]
+    if list then
+        for _, connection in ipairs(list) do
+            pcall(function() connection:Disconnect() end)
+        end
+        ESPPlayerConnections[targetPlayer] = nil
+    end
+end
+
+
+-- GUI CREATION
+
+--========================================================
+
+local gui = Instance.new("ScreenGui")
+
+gui.Name = "AestheticStudioV3"
+
+gui.ResetOnSpawn = false
+
+gui.IgnoreGuiInset = true
+
+gui.DisplayOrder = 999
+
+gui.Parent = playerGui
+
+local main = Instance.new("Frame")
+
+main.Name = "Main"
+
+main.Size = UDim2.fromOffset(390, 540)
+
+main.Position = UDim2.new(1, -410, 0.5, -270)
+
+main.BackgroundColor3 = Color3.fromRGB(22, 24, 32)
+
+main.BorderSizePixel = 0
+
+main.Parent = gui
+
+local mainCorner = Instance.new("UICorner")
+
+mainCorner.CornerRadius = UDim.new(0, 12)
+
+mainCorner.Parent = main
+
+local stroke = Instance.new("UIStroke")
+
+stroke.Color = Color3.fromRGB(80, 85, 110)
+
+stroke.Thickness = 1
+
+stroke.Parent = main
+
+local function makeLabel(parent, text, size, position, textSize)
+
+    local label = Instance.new("TextLabel")
+
+    label.BackgroundTransparency = 1
+
+    label.Text = text
+
+    label.Size = size
+
+    label.Position = position
+
+    label.Font = Enum.Font.GothamSemibold
+
+    label.TextSize = textSize or 13
+
+    label.TextColor3 = Color3.fromRGB(240, 240, 250)
+
+    label.TextXAlignment = Enum.TextXAlignment.Left
+
+    label.Parent = parent
+
+    return label
+
+end
+
+local function makeButton(parent, text, size, position, color)
+
+    local button = Instance.new("TextButton")
+
+    button.Size = size
+
+    button.Position = position
+
+    button.BackgroundColor3 = color or Color3.fromRGB(42, 45, 58)
+
+    button.BorderSizePixel = 0
+
+    button.Text = text
+
+    button.TextColor3 = Color3.fromRGB(240, 240, 250)
+
+    button.Font = Enum.Font.GothamSemibold
+
+    button.TextSize = 12
+
+    button.AutoButtonColor = true
+
+    button.Parent = parent
+
+    local corner = Instance.new("UICorner")
+
+    corner.CornerRadius = UDim.new(0, 6)
+
+    corner.Parent = button
+
+    return button
+
+end
+
+-- Header
+
+local header = Instance.new("Frame")
+
+header.Size = UDim2.new(1, 0, 0, 42)
+
+header.BackgroundColor3 = Color3.fromRGB(31, 34, 45)
+
+header.BorderSizePixel = 0
+
+header.Parent = main
+
+local headerCorner = Instance.new("UICorner")
+
+headerCorner.CornerRadius = UDim.new(0, 12)
+
+headerCorner.Parent = header
+
+makeLabel(
+
+    header,
+
+    "✦  UNIVERSAL STUDIO",
+
+    UDim2.new(1, -125, 1, 0),
+
+    UDim2.fromOffset(13, 0),
+
+    14
+
+)
+
+local minimizeButton = makeButton(
+
+    header, "—", UDim2.fromOffset(30, 27),
+
+    UDim2.new(1, -75, 0, 7)
+
+)
+
+local closeButton = makeButton(
+
+    header, "×", UDim2.fromOffset(30, 27),
+
+    UDim2.new(1, -38, 0, 7),
+
+    Color3.fromRGB(125, 50, 60)
+
+)
+
+-- Dragging
+
+local dragging = false
+
+local dragStart
+
+local startPosition
+
+connect(header.InputBegan, function(input)
+
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+
+        or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = true
+
+        dragStart = input.Position
+
+        startPosition = main.Position
+
+    end
+
+end)
+
+connect(UserInputService.InputChanged, function(input)
+
+    if dragging and (
+
+        input.UserInputType == Enum.UserInputType.MouseMovement
+
+        or input.UserInputType == Enum.UserInputType.Touch
+
+    ) then
+
+        local delta = input.Position - dragStart
+
+        main.Position = UDim2.new(
+
+            startPosition.X.Scale,
+
+            startPosition.X.Offset + delta.X,
+
+            startPosition.Y.Scale,
+
+            startPosition.Y.Offset + delta.Y
+
+        )
+
+    end
+
+end)
+
+connect(UserInputService.InputEnded, function(input)
+
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+
+        or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = false
+
+    end
+
+end)
+
+-- Main content
+
+local content = Instance.new("Frame")
+
+content.BackgroundTransparency = 1
+
+content.Position = UDim2.fromOffset(10, 88)
+content.Size = UDim2.new(1, -20, 1, -98)
+
+
+content.Parent = main
+
+-- Shared module tabs
+local moduleTabBar = Instance.new("Frame")
+moduleTabBar.Name = "ModuleTabs"
+moduleTabBar.BackgroundTransparency = 1
+moduleTabBar.Position = UDim2.fromOffset(10, 48)
+moduleTabBar.Size = UDim2.new(1, -20, 0, 32)
+moduleTabBar.Parent = main
+
+local aestheticModuleTab = makeButton(
+    moduleTabBar, "AESTHETIC", UDim2.new(0.5, -4, 1, 0),
+    UDim2.fromOffset(0, 0), Color3.fromRGB(70, 85, 125)
+)
+
+local playerModuleTab = makeButton(
+    moduleTabBar, "PLAYER ESP", UDim2.new(0.5, -4, 1, 0),
+    UDim2.new(0.5, 4, 0, 0)
+)
+
+local playerPage = Instance.new("Frame")
+playerPage.Name = "PlayerESPPage"
+playerPage.Position = content.Position
+playerPage.Size = content.Size
+playerPage.BackgroundTransparency = 1
+playerPage.Visible = false
+playerPage.Parent = main
+
+local activeModule = "Aesthetic"
+local function selectModule(moduleName)
+    activeModule = moduleName
+    local showAesthetic = moduleName == "Aesthetic"
+    content.Visible = showAesthetic
+    playerPage.Visible = not showAesthetic
+
+    aestheticModuleTab.BackgroundColor3 = showAesthetic
+        and Color3.fromRGB(70, 85, 125)
+        or Color3.fromRGB(42, 45, 58)
+
+    playerModuleTab.BackgroundColor3 = not showAesthetic
+        and Color3.fromRGB(70, 85, 125)
+        or Color3.fromRGB(42, 45, 58)
+end
+
+connect(aestheticModuleTab.MouseButton1Click, function()
+    selectModule("Aesthetic")
+end)
+
+connect(playerModuleTab.MouseButton1Click, function()
+    selectModule("PlayerESP")
+end)
+
+-- Player ESP page
+makeLabel(
+    playerPage, "PLAYER ESP", UDim2.new(1, 0, 0, 24),
+    UDim2.fromOffset(2, 5), 14
+)
+
+local espDescription = makeLabel(
+    playerPage,
+    "Highlight other players and show their display names.",
+    UDim2.new(1, 0, 0, 32),
+    UDim2.fromOffset(2, 31), 11
+)
+espDescription.TextColor3 = Color3.fromRGB(165, 170, 190)
+
+espToggleButton = makeButton(
+    playerPage,
+    "PLAYER ESP: ON",
+    UDim2.new(1, 0, 0, 34),
+    UDim2.fromOffset(0, 75),
+    Color3.fromRGB(55, 85, 65)
+)
+
+local espSizeLabel = makeLabel(
+    playerPage,
+    "DISPLAY NAME SIZE: " .. tostring(DISPLAY_NAME_SIZE),
+    UDim2.new(1, 0, 0, 22),
+    UDim2.fromOffset(2, 119), 11
+)
+
+local espSizeHint = makeLabel(
+    playerPage,
+    "Fixed font size; does not scale with distance.",
+    UDim2.new(1, 0, 0, 22),
+    UDim2.fromOffset(2, 142), 10
+)
+espSizeHint.TextColor3 = Color3.fromRGB(155, 160, 180)
+
+local espColorHint = makeLabel(
+    playerPage,
+    "Highlight: red  |  Outline: white  |  Hotkey: R",
+    UDim2.new(1, 0, 0, 22),
+    UDim2.fromOffset(2, 174), 10
+)
+espColorHint.TextColor3 = Color3.fromRGB(155, 160, 180)
+
+connect(espToggleButton.MouseButton1Click, togglePlayerESP)
+
+
+-- Tabs
+
+local allTab = makeButton(
+
+    content, "ALL FILTERS", UDim2.fromOffset(115, 30),
+
+    UDim2.fromOffset(0, 0),
+
+    Color3.fromRGB(70, 85, 125)
+
+)
+
+local favouriteTab = makeButton(
+
+    content, "★ FAVOURITES", UDim2.fromOffset(125, 30),
+
+    UDim2.fromOffset(122, 0)
+
+)
+
+local resetButton = makeButton(
+
+    content, "RESET", UDim2.fromOffset(110, 30),
+
+    UDim2.new(1, -110, 0, 0),
+
+    Color3.fromRGB(100, 65, 65)
+
+)
+
+-- Search
+
+local searchBox = Instance.new("TextBox")
+
+searchBox.Size = UDim2.new(1, 0, 0, 32)
+
+searchBox.Position = UDim2.fromOffset(0, 38)
+
+searchBox.BackgroundColor3 = Color3.fromRGB(34, 37, 49)
+
+searchBox.BorderSizePixel = 0
+
+searchBox.PlaceholderText = "Search filters..."
+
+searchBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 165)
+
+searchBox.Text = ""
+
+searchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+
+searchBox.Font = Enum.Font.Gotham
+
+searchBox.TextSize = 12
+
+searchBox.ClearTextOnFocus = false
+
+searchBox.Parent = content
+
+local searchCorner = Instance.new("UICorner")
+
+searchCorner.CornerRadius = UDim.new(0, 6)
+
+searchCorner.Parent = searchBox
+
+-- Category selector
+
+local categoryScroll = Instance.new("ScrollingFrame")
+
+categoryScroll.Size = UDim2.new(1, 0, 0, 34)
+
+categoryScroll.Position = UDim2.fromOffset(0, 78)
+
+categoryScroll.BackgroundTransparency = 1
+
+categoryScroll.BorderSizePixel = 0
+
+categoryScroll.ScrollBarThickness = 2
+
+categoryScroll.ScrollingDirection = Enum.ScrollingDirection.X
+
+categoryScroll.AutomaticCanvasSize = Enum.AutomaticSize.X
+
+categoryScroll.CanvasSize = UDim2.new()
+
+categoryScroll.Parent = content
+
+local categoryLayout = Instance.new("UIListLayout")
+
+categoryLayout.FillDirection = Enum.FillDirection.Horizontal
+
+categoryLayout.Padding = UDim.new(0, 5)
+
+categoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+categoryLayout.Parent = categoryScroll
+
+local categoryButtons = {}
+
+local function createCategoryButton(name)
+
+    local button = makeButton(
+
+        categoryScroll,
+
+        name,
+
+        UDim2.fromOffset(math.max(55, #name \* 8 + 20), 27),
+
+        UDim2.new(),
+
+        Color3.fromRGB(42, 45, 58)
+
+    )
+
+    categoryButtons[name] = button
+
+    connect(button.MouseButton1Click, function()
+
+        currentCategory = name
+
+        refreshFilters()
+
+    end)
+
+end
+
+-- Filter list
+
+local filterScroll = Instance.new("ScrollingFrame")
+
+filterScroll.Size = UDim2.new(1, 0, 1, -205)
+
+filterScroll.Position = UDim2.fromOffset(0, 118)
+
+filterScroll.BackgroundColor3 = Color3.fromRGB(27, 29, 39)
+
+filterScroll.BorderSizePixel = 0
+
+filterScroll.ScrollBarThickness = 4
+
+filterScroll.CanvasSize = UDim2.new()
+
+filterScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+
+filterScroll.Parent = content
+
+local filterCorner = Instance.new("UICorner")
+
+filterCorner.CornerRadius = UDim.new(0, 8)
+
+filterCorner.Parent = filterScroll
+
+local filterLayout = Instance.new("UIListLayout")
+
+filterLayout.Padding = UDim.new(0, 5)
+
+filterLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+filterLayout.Parent = filterScroll
+
+local filterPadding = Instance.new("UIPadding")
+
+filterPadding.PaddingTop = UDim.new(0, 7)
+
+filterPadding.PaddingBottom = UDim.new(0, 7)
+
+filterPadding.PaddingLeft = UDim.new(0, 7)
+
+filterPadding.PaddingRight = UDim.new(0, 7)
+
+filterPadding.Parent = filterScroll
+
+-- Graphics controls
+
+local graphicsLabel = makeLabel(
+
+    content,
+
+    "GRAPHICS",
+
+    UDim2.fromOffset(120, 17),
+
+    UDim2.new(0, 0, 1, -81),
+
+    11
+
+)
+
+local bloomButton = makeButton(
+
+    content, "BLOOM: ON",
+
+    UDim2.fromOffset(112, 29),
+
+    UDim2.new(0, 0, 1, -58)
+
+)
+
+local raysButton = makeButton(
+
+    content, "RAYS: ON",
+
+    UDim2.fromOffset(112, 29),
+
+    UDim2.new(0, 119, 1, -58)
+
+)
+
+local depthButton = makeButton(
+
+    content, "DEPTH: OFF",
+
+    UDim2.fromOffset(112, 29),
+
+    UDim2.new(0, 238, 1, -58)
+
+)
+
+local iconButton = makeButton(
+
+    content, "HIDE ICONS",
+
+    UDim2.fromOffset(112, 25),
+
+    UDim2.new(0, 0, 1, -25)
+
+)
+
+local statusLabel = makeLabel(
+
+    content,
+
+    "T: Toggle GUI  |  P: Stop script",
+
+    UDim2.new(1, -120, 0, 22),
+
+    UDim2.new(0, 120, 1, -24),
+
+    10
+
+)
+
+statusLabel.TextColor3 = Color3.fromRGB(155, 160, 180)
+
+statusLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+--========================================================
+
+-- FILTER LIST AND FAVOURITES
+
+--========================================================
+
+local function clearFilterButtons()
+
+    for _, child in ipairs(filterScroll:GetChildren()) do
+
+        if child:IsA("Frame") then
+
+            child:Destroy()
+
+        end
+
+    end
+
+end
+
+function refreshFilters()
+
+    if not running then
+
+        return
+
+    end
+
+    clearFilterButtons()
+
+    allTab.BackgroundColor3 =
+
+        currentTab == "All"
+
+        and Color3.fromRGB(70, 85, 125)
+
+        or Color3.fromRGB(42, 45, 58)
+
+    favouriteTab.BackgroundColor3 =
+
+        currentTab == "Favourites"
+
+        and Color3.fromRGB(110, 85, 45)
+
+        or Color3.fromRGB(42, 45, 58)
+
+    for name, button in pairs(categoryButtons) do
+
+        button.BackgroundColor3 =
+
+            currentCategory == name
+
+            and Color3.fromRGB(70, 85, 125)
+
+            or Color3.fromRGB(42, 45, 58)
+
+    end
+
+    local shown = 0
+
+    for _, filter in ipairs(filters) do
+
+        local matchesTab =
+
+            currentTab == "All"
+
+            or favourites[filter.id] == true
+
+        local matchesCategory =
+
+            currentCategory == "All"
+
+            or filter.category == currentCategory
+
+        local matchesSearch =
+
+            searchText == ""
+
+            or string.find(string.lower(filter.name), searchText, 1, true)
+
+            or string.find(string.lower(filter.category), searchText, 1, true)
+
+        if matchesTab and matchesCategory and matchesSearch then
+
+            shown += 1
+
+            local row = Instance.new("Frame")
+
+            row.Size = UDim2.new(1, -4, 0, 36)
+
+            row.BackgroundColor3 =
+
+                selectedFilter == filter
+
+                and Color3.fromRGB(57, 67, 91)
+
+                or Color3.fromRGB(38, 41, 53)
+
+            row.BorderSizePixel = 0
+
+            row.LayoutOrder = shown
+
+            row.Parent = filterScroll
+
+            local rowCorner = Instance.new("UICorner")
+
+            rowCorner.CornerRadius = UDim.new(0, 6)
+
+            rowCorner.Parent = row
+
+            local selectButton = Instance.new("TextButton")
+
+            selectButton.Size = UDim2.new(1, -48, 1, 0)
+
+            selectButton.Position = UDim2.fromOffset(8, 0)
+
+            selectButton.BackgroundTransparency = 1
+
+            selectButton.Text = filter.name .. "  ·  " .. filter.category
+
+            selectButton.TextColor3 = Color3.fromRGB(235, 235, 245)
+
+            selectButton.TextXAlignment = Enum.TextXAlignment.Left
+
+            selectButton.Font = Enum.Font.Gotham
+
+            selectButton.TextSize = 11
+
+            selectButton.Parent = row
+
+            connect(selectButton.MouseButton1Click, function()
+
+                applyFilter(filter)
+
+                refreshFilters()
+
+            end)
+
+            local starButton = Instance.new("TextButton")
+
+            starButton.Size = UDim2.fromOffset(36, 30)
+
+            starButton.Position = UDim2.new(1, -40, 0, 3)
+
+            starButton.BackgroundTransparency = 1
+
+            starButton.Text = favourites[filter.id] and "★" or "☆"
+
+            starButton.TextColor3 = favourites[filter.id]
+
+                and Color3.fromRGB(255, 205, 85)
+
+                or Color3.fromRGB(160, 165, 180)
+
+            starButton.Font = Enum.Font.GothamBold
+
+            starButton.TextSize = 20
+
+            starButton.Parent = row
+
+            connect(starButton.MouseButton1Click, function()
+
+                favourites[filter.id] = not favourites[filter.id]
+
+                    or nil
+
+                refreshFilters()
+
+            end)
+
+        end
+
+    end
+
+    if shown == 0 then
+
+        local empty = makeLabel(
+
+            filterScroll,
+
+            currentTab == "Favourites"
+
+                and "No favourites yet. Press ☆ beside a filter to save it."
+
+                or "No filters found.",
+
+            UDim2.new(1, -15, 0, 50),
+
+            UDim2.fromOffset(8, 8),
+
+            11
+
+        )
+
+        empty.TextColor3 = Color3.fromRGB(155, 160, 175)
+
+        empty.TextWrapped = true
+
+    end
+
+end
+
+createCategoryButton("All")
+
+for _, category in ipairs(categories) do
+
+    createCategoryButton(category.name)
+
+end
+
+connect(allTab.MouseButton1Click, function()
+
+    currentTab = "All"
+
+    currentCategory = "All"
+
+    refreshFilters()
+
+end)
+
+connect(favouriteTab.MouseButton1Click, function()
+
+    currentTab = "Favourites"
+
+    currentCategory = "All"
+
+    refreshFilters()
+
+end)
+
+connect(searchBox:GetPropertyChangedSignal("Text"), function()
+
+    searchText = string.lower(searchBox.Text)
+
+    refreshFilters()
+
+end)
+
+connect(resetButton.MouseButton1Click, function()
+
+    selectedFilter = nil
+
+    resetVisuals()
+
+    refreshFilters()
+
+end)
+
+--========================================================
+
+-- GRAPHICS BUTTONS
+
+--========================================================
+
+local bloomEnabled = true
+
+local raysEnabled = true
+
+local depthEnabled = false
+
+connect(bloomButton.MouseButton1Click, function()
+
+    bloomEnabled = not bloomEnabled
+
+    bloomEffect.Enabled = bloomEnabled
+
+    bloomButton.Text = bloomEnabled and "BLOOM: ON" or "BLOOM: OFF"
+
+end)
+
+connect(raysButton.MouseButton1Click, function()
+
+    raysEnabled = not raysEnabled
+
+    raysEffect.Enabled = raysEnabled
+
+    raysButton.Text = raysEnabled and "RAYS: ON" or "RAYS: OFF"
+
+end)
+
+connect(depthButton.MouseButton1Click, function()
+
+    depthEnabled = not depthEnabled
+
+    depthEffect.Enabled = depthEnabled
+
+    depthEffect.FarIntensity = 0.15
+
+    depthEffect.NearIntensity = 0.1
+
+    depthEffect.FocusDistance = 35
+
+    depthEffect.InFocusRadius = 25
+
+    depthButton.Text = depthEnabled and "DEPTH: ON" or "DEPTH: OFF"
+
+end)
+
+--========================================================
+
+-- HIDE ROBLOX ICONS
+
+--========================================================
+
+local iconsHidden = false
+
+local coreGuiTypes = {
+
+    Enum.CoreGuiType.Backpack,
+
+    Enum.CoreGuiType.Chat,
+
+    Enum.CoreGuiType.EmotesMenu,
+
+    Enum.CoreGuiType.Health,
+
+    Enum.CoreGuiType.PlayerList
+
+}
+
+local function setIconsHidden(hidden)
+
+    iconsHidden = hidden
+
+    for _, guiType in ipairs(coreGuiTypes) do
+
+        pcall(function()
+
+            StarterGui:SetCoreGuiEnabled(guiType, not hidden)
+
+        end)
+
+    end
+
+    pcall(function()
+
+        StarterGui:SetCore("TopbarEnabled", not hidden)
+
+    end)
+
+    iconButton.Text = hidden and "SHOW ICONS" or "HIDE ICONS"
+
+end
+
+connect(iconButton.MouseButton1Click, function()
+
+    setIconsHidden(not iconsHidden)
+
+end)
+
+--========================================================
+
+-- MINIMIZE / CLOSE
+
+--========================================================
+
+local normalSize = main.Size
+
+connect(minimizeButton.MouseButton1Click, function()
+
+    minimized = not minimized
+    moduleTabBar.Visible = not minimized
+    if not minimized then
+        selectModule(activeModule)
+    else
+        content.Visible = false
+        playerPage.Visible = false
+    end
+    main.Size = minimized
+        and UDim2.fromOffset(390, 42)
+        or normalSize
+
+    minimizeButton.Text = minimized and "+" or "—"
+
+end)
+
+connect(closeButton.MouseButton1Click, function()
+
+    guiVisible = false
+
+    gui.Enabled = false
+
+end)
+
+--========================================================
+
+-- KEYBOARD SHORTCUTS
+
+--========================================================
+
+local function cleanup()
+
+    if not running then
+
+        return
+
+    end
+
+    running = false
+
+    for targetPlayer in pairs(ESPObjects) do
+        removePlayerESP(targetPlayer)
+    end
+
+    for targetPlayer in pairs(ESPPlayerConnections) do
+        removeESPPlayerConnections(targetPlayer)
+    end
+
+    for _, connection in ipairs(connections) do
+
+        pcall(function()
+
+            connection:Disconnect()
+
+        end)
+
+    end
+
+    resetVisuals()
+
+    if createdAtmosphere and existingAtmosphere then
+
+        existingAtmosphere:Destroy()
+
+    end
+
+    colorEffect:Destroy()
+
+    bloomEffect:Destroy()
+
+    raysEffect:Destroy()
+
+    depthEffect:Destroy()
+
+    if gui and gui.Parent then
+
+        gui:Destroy()
+
+    end
+
+    setIconsHidden(false)
+
+    _G.AestheticStudioCleanup = nil
+
+end
+
+_G.AestheticStudioCleanup = cleanup
+
+connect(UserInputService.InputBegan, function(input, processed)
+
+    if processed or not running then
+
+        return
+
+    end
+
+    if input.KeyCode == Enum.KeyCode.T then
+
+        guiVisible = not guiVisible
+
+        gui.Enabled = guiVisible
+
+    elseif input.KeyCode == Enum.KeyCode.R then
+        togglePlayerESP()
+    elseif input.KeyCode == Enum.KeyCode.P then
+
+        cleanup()
+
+    end
+
+end)
+
+--========================================================
+
+-- INITIALIZE
+
+--========================================================
+
+-- PLAYER ESP PLAYER TRACKING
+
+connect(Players.PlayerAdded, setupESPPlayer)
+connect(Players.PlayerRemoving, removeESPPlayerConnections)
+
+for _, targetPlayer in ipairs(Players:GetPlayers()) do
+    setupESPPlayer(targetPlayer)
+end
+
+refreshFilters()
+selectModule("Aesthetic")
+refreshPlayerESP()
+
+print("Universal Studio loaded.")
+
+print("Total filters:", #filters)
+
+print("T = Show/Hide GUI | R = Toggle Player ESP")
+
+print("P = Stop script and restore settings")
