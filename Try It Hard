@@ -1,2126 +1,2718 @@
-
-
 --========================================================
-
--- AESTHETIC STUDIO V3
-
--- 166 Filters + Favourites + Sky Matching
-
--- Client-side visual effects
-
+-- THEUNION HUB (Universal Multi-Tool Hub - Fixed Batch Catalog Pricing)
+-- Client-side LocalScript / Executor Compatible
 --========================================================
 
 local Players = game:GetService("Players")
-
 local Lighting = game:GetService("Lighting")
-
 local UserInputService = game:GetService("UserInputService")
-
+local TweenService = game:GetService("TweenService")
+local TeleportService = game:GetService("TeleportService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 local StarterGui = game:GetService("StarterGui")
+local SoundService = game:GetService("SoundService")
+local HttpService = game:GetService("HttpService")
 
-local player = Players.LocalPlayer
-
-local playerGui = player:WaitForChild("PlayerGui")
-
---========================================================
-
--- CLEAN UP PREVIOUS INSTANCE
-
---========================================================
-
-if _G.AestheticStudioCleanup then
-
-    pcall(_G.AestheticStudioCleanup)
-
-end
-
-local running = true
-
-local connections = {}
-
-local favourites = {}
-
-local currentTab = "All"
-
-local currentCategory = "All"
-
-local searchText = ""
-
-local guiVisible = true
-
-local minimized = false
-
-local function connect(signal, callback)
-
-    local connection = signal:Connect(callback)
-
-    table.insert(connections, connection)
-
-    return connection
-
-end
-
---========================================================
-
--- SAVE ORIGINAL LIGHTING SETTINGS
-
---========================================================
-
-local originalLighting = {
-
-    Ambient = Lighting.Ambient,
-
-    OutdoorAmbient = Lighting.OutdoorAmbient,
-
-    Brightness = Lighting.Brightness,
-
-    ExposureCompensation = Lighting.ExposureCompensation,
-
-    ClockTime = Lighting.ClockTime,
-
-    FogColor = Lighting.FogColor,
-
-    FogEnd = Lighting.FogEnd,
-
-    FogStart = Lighting.FogStart,
-
-    GlobalShadows = Lighting.GlobalShadows
-
-}
-
-local originalAtmosphere = nil
-
-local existingAtmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
-
-local createdAtmosphere = false
-
-if existingAtmosphere then
-
-    originalAtmosphere = {
-
-        object = existingAtmosphere,
-
-        Color = existingAtmosphere.Color,
-
-        Decay = existingAtmosphere.Decay,
-
-        Density = existingAtmosphere.Density,
-
-        Haze = existingAtmosphere.Haze,
-
-        Glare = existingAtmosphere.Glare,
-
-        Offset = existingAtmosphere.Offset
-
-    }
-
-else
-
-    existingAtmosphere = Instance.new("Atmosphere")
-
-    existingAtmosphere.Name = "AS_Atmosphere"
-
-    existingAtmosphere.Parent = Lighting
-
-    createdAtmosphere = true
-
-end
-
---========================================================
-
--- CREATE VISUAL EFFECTS
-
---========================================================
-
-local function createEffect(className, name)
-
-    local old = Lighting:FindFirstChild(name)
-
-    if old then
-
-        old:Destroy()
-
-    end
-
-    local effect = Instance.new(className)
-
-    effect.Name = name
-
-    effect.Parent = Lighting
-
-    return effect
-
-end
-
-local colorEffect = createEffect("ColorCorrectionEffect", "AS_Color")
-
-local bloomEffect = createEffect("BloomEffect", "AS_Bloom")
-
-local raysEffect = createEffect("SunRaysEffect", "AS_Rays")
-
-local depthEffect = createEffect("DepthOfFieldEffect", "AS_Depth")
-
-colorEffect.Enabled = false
-
-bloomEffect.Enabled = false
-
-raysEffect.Enabled = false
-
-depthEffect.Enabled = false
-
---========================================================
-
--- FILTER DATA
-
---========================================================
-
-local filters = {}
-
-local function addFilter(name, category, tint, saturation, contrast, brightness)
-
-    table.insert(filters, {
-
-        name = name,
-
-        category = category,
-
-        tint = tint,
-
-        saturation = saturation or 0.1,
-
-        contrast = contrast or 0.1,
-
-        brightness = brightness or 0,
-
-        id = #filters + 1
-
-    })
-
-end
-
--- Original 16 filters
-
-local originalFilters = {
-
-    {"Cinematic", "Cinematic", Color3.fromRGB(255, 220, 190), 0.1, 0.25, -0.03},
-
-    {"Warm Sunset", "Warm", Color3.fromRGB(255, 170, 105), 0.15, 0.15, 0.02},
-
-    {"Cold Winter", "Cold", Color3.fromRGB(175, 210, 255), -0.1, 0.2, 0},
-
-    {"Dreamy Pink", "Pink", Color3.fromRGB(255, 180, 215), 0.2, 0.05, 0.03},
-
-    {"Vintage Film", "Vintage", Color3.fromRGB(225, 195, 145), -0.15, 0.2, -0.02},
-
-    {"Dark Academia", "Dark", Color3.fromRGB(170, 145, 115), -0.2, 0.3, -0.08},
-
-    {"Soft Pastel", "Pastel", Color3.fromRGB(225, 220, 255), 0.1, -0.1, 0.04},
-
-    {"Golden Hour", "Warm", Color3.fromRGB(255, 205, 125), 0.25, 0.15, 0.04},
-
-    {"Blue Hour", "Blue", Color3.fromRGB(145, 185, 255), -0.05, 0.2, -0.02},
-
-    {"Moody Grey", "Grey", Color3.fromRGB(185, 190, 200), -0.35, 0.25, -0.05},
-
-    {"Lavender Dream", "Purple", Color3.fromRGB(200, 175, 255), 0.15, 0.05, 0.03},
-
-    {"Forest Green", "Nature", Color3.fromRGB(165, 220, 165), 0.1, 0.2, -0.02},
-
-    {"Neon Night", "Neon", Color3.fromRGB(190, 145, 255), 0.35, 0.3, 0.02},
-
-    {"Clean White", "Bright", Color3.fromRGB(245, 245, 255), -0.05, -0.05, 0.08},
-
-    {"Horror Atmosphere", "Horror", Color3.fromRGB(145, 165, 150), -0.4, 0.35, -0.12},
-
-    {"Soft Realistic", "Realistic", Color3.fromRGB(255, 245, 230), 0.05, 0.1, 0.01}
-
-}
-
-for _, data in ipairs(originalFilters) do
-
-    addFilter(
-
-        data[1], data[2], data[3],
-
-        data[4], data[5], data[6]
-
-    )
-
-end
-
--- 15 categories, 10 filters per category = 150 filters
-
-local categories = {
-
-    {
-
-        name = "Warm",
-
-        palette = Color3.fromRGB(255, 175, 110),
-
-        sky = Color3.fromRGB(255, 190, 145),
-
-        decay = Color3.fromRGB(150, 95, 65),
-
-        names = {
-
-            "Amber Glow", "Honey Light", "Peach Sunset", "Soft Orange",
-
-            "Golden Warmth", "Autumn Light", "Warm Film", "Sunlit",
-
-            "Copper Glow", "Evening Gold"
-
-        }
-
-    },
-
-    {
-
-        name = "Cold",
-
-        palette = Color3.fromRGB(165, 210, 255),
-
-        sky = Color3.fromRGB(180, 215, 255),
-
-        decay = Color3.fromRGB(100, 135, 190),
-
-        names = {
-
-            "Arctic Blue", "Frozen World", "Ice Crystal", "Snowfall",
-
-            "Cold Morning", "Winter Sky", "Frosted Glass", "Glacier",
-
-            "Blue Frost", "Polar Light"
-
-        }
-
-    },
-
-    {
-
-        name = "Pink",
-
-        palette = Color3.fromRGB(255, 175, 215),
-
-        sky = Color3.fromRGB(255, 195, 220),
-
-        decay = Color3.fromRGB(180, 110, 150),
-
-        names = {
-
-            "Rose Dream", "Cotton Candy", "Blush Pink", "Pink Cloud",
-
-            "Cherry Blossom", "Rose Quartz", "Sweet Pink", "Bubblegum",
-
-            "Pastel Rose", "Pink Paradise"
-
-        }
-
-    },
-
-    {
-
-        name = "Purple",
-
-        palette = Color3.fromRGB(195, 160, 255),
-
-        sky = Color3.fromRGB(205, 180, 255),
-
-        decay = Color3.fromRGB(115, 90, 165),
-
-        names = {
-
-            "Purple Haze", "Violet Dream", "Lilac Sky", "Mystic Purple",
-
-            "Lavender Field", "Royal Violet", "Purple Moon", "Soft Lilac",
-
-            "Amethyst", "Twilight Purple"
-
-        }
-
-    },
-
-    {
-
-        name = "Blue",
-
-        palette = Color3.fromRGB(145, 190, 255),
-
-        sky = Color3.fromRGB(155, 195, 255),
-
-        decay = Color3.fromRGB(80, 110, 175),
-
-        names = {
-
-            "Ocean Blue", "Deep Sea", "Clear Sky", "Blue Mist",
-
-            "Azure", "Midnight Blue", "Blue Serenity", "Aqua Blue",
-
-            "Dream Blue", "Coastal Blue"
-
-        }
-
-    },
-
-    {
-
-        name = "Nature",
-
-        palette = Color3.fromRGB(160, 220, 155),
-
-        sky = Color3.fromRGB(185, 225, 185),
-
-        decay = Color3.fromRGB(90, 135, 90),
-
-        names = {
-
-            "Moss Green", "Forest Mist", "Emerald", "Spring Garden",
-
-            "Fresh Leaves", "Green Meadow", "Nature Glow", "Sage",
-
-            "Deep Forest", "Wild Garden"
-
-        }
-
-    },
-
-    {
-
-        name = "Vintage",
-
-        palette = Color3.fromRGB(220, 190, 145),
-
-        sky = Color3.fromRGB(220, 200, 165),
-
-        decay = Color3.fromRGB(145, 120, 85),
-
-        names = {
-
-            "Old Camera", "Retro Film", "Sepia Light", "Classic Film",
-
-            "Faded Memories", "Old Photograph", "Dusty Gold",
-
-            "Vintage Brown", "Analog Film", "Nostalgia"
-
-        }
-
-    },
-
-    {
-
-        name = "Dark",
-
-        palette = Color3.fromRGB(155, 155, 175),
-
-        sky = Color3.fromRGB(110, 115, 145),
-
-        decay = Color3.fromRGB(65, 65, 90),
-
-        names = {
-
-            "Dark Mood", "Shadow World", "Nightfall", "Dark Film",
-
-            "Midnight", "Low Exposure", "Dark Cinematic",
-
-            "Shadow Blue", "Black Mist", "Deep Shadows"
-
-        }
-
-    },
-
-    {
-
-        name = "Pastel",
-
-        palette = Color3.fromRGB(220, 215, 255),
-
-        sky = Color3.fromRGB(225, 220, 255),
-
-        decay = Color3.fromRGB(155, 150, 195),
-
-        names = {
-
-            "Pastel Heaven", "Soft Clouds", "Pastel World",
-
-            "Milky Pink", "Soft Lavender", "Pastel Blue",
-
-            "Pastel Peach", "Dreamy Sky", "Light Pastel", "Fairy Dust"
-
-        }
-
-    },
-
-    {
-
-        name = "Neon",
-
-        palette = Color3.fromRGB(195, 140, 255),
-
-        sky = Color3.fromRGB(120, 100, 190),
-
-        decay = Color3.fromRGB(65, 45, 125),
-
-        names = {
-
-            "Cyberpunk", "Neon City", "Electric Purple", "Night Lights",
-
-            "Neon Dreams", "Electric Blue", "Digital World",
-
-            "Neon Pink", "Future Glow", "Cyber Night"
-
-        }
-
-    },
-
-    {
-
-        name = "Grey",
-
-        palette = Color3.fromRGB(190, 195, 205),
-
-        sky = Color3.fromRGB(190, 195, 205),
-
-        decay = Color3.fromRGB(110, 115, 125),
-
-        names = {
-
-            "Silver Mist", "Monochrome", "Cloudy Day", "Grey Film",
-
-            "Soft Grey", "Concrete", "Overcast", "Steel",
-
-            "Foggy Morning", "Neutral Grey"
-
-        }
-
-    },
-
-    {
-
-        name = "Bright",
-
-        palette = Color3.fromRGB(250, 245, 255),
-
-        sky = Color3.fromRGB(245, 245, 255),
-
-        decay = Color3.fromRGB(180, 185, 200),
-
-        names = {
-
-            "Pure White", "High Key", "Bright Day", "Clean Light",
-
-            "White Dream", "Airy", "Soft Exposure", "Light Room",
-
-            "Bright Heaven", "Crystal Clear"
-
-        }
-
-    },
-
-    {
-
-        name = "Horror",
-
-        palette = Color3.fromRGB(135, 155, 140),
-
-        sky = Color3.fromRGB(105, 125, 110),
-
-        decay = Color3.fromRGB(45, 65, 50),
-
-        names = {
-
-            "Abandoned", "Haunted Fog", "Creepy Night", "Dead Forest",
-
-            "Eerie Green", "Dark Fog", "Haunted House",
-
-            "Night Terror", "Ghost Town", "Horror Film"
-
-        }
-
-    },
-
-    {
-
-        name = "Realistic",
-
-        palette = Color3.fromRGB(245, 235, 220),
-
-        sky = Color3.fromRGB(220, 225, 230),
-
-        decay = Color3.fromRGB(150, 155, 160),
-
-        names = {
-
-            "Natural Light", "True Color", "Real Camera",
-
-            "Soft Daylight", "Neutral Film", "Natural Skin",
-
-            "Balanced Light", "Clear Realism", "Photo Real",
-
-            "Studio Natural"
-
-        }
-
-    },
-
-    {
-
-        name = "Cinematic",
-
-        palette = Color3.fromRGB(230, 195, 160),
-
-        sky = Color3.fromRGB(185, 195, 205),
-
-        decay = Color3.fromRGB(95, 110, 125),
-
-        names = {
-
-            "Movie Scene", "Teal Orange", "Film Director",
-
-            "Cinema Gold", "Epic Scene", "Movie Night",
-
-            "Wide Screen", "Drama Film", "Cinematic Warm",
-
-            "Cinematic Blue"
-
-        }
-
-    }
-
-}
-
-for _, category in ipairs(categories) do
-
-    for i, name in ipairs(category.names) do
-
-        local variation = (i - 5) \* 0.025
-
-        local tint = category.palette:Lerp(Color3.new(1, 1, 1), variation)
-
-        addFilter(
-
-            name,
-
-            category.name,
-
-            tint,
-
-            (i - 5) \* 0.035,
-
-            0.12 + (i \* 0.012),
-
-            (i - 5) \* 0.008
-
-        )
-
-    end
-
-end
-
---========================================================
-
--- CATEGORY SKY SETTINGS
-
---========================================================
-
-local skySettings = {}
-
-for _, category in ipairs(categories) do
-
-    skySettings[category.name] = {
-
-        color = category.sky,
-
-        decay = category.decay
-
-    }
-
-end
-
-skySettings.Cinematic = {
-
-    color = Color3.fromRGB(185, 195, 205),
-
-    decay = Color3.fromRGB(95, 110, 125)
-
-}
-
-skySettings.Warm = {
-
-    color = Color3.fromRGB(255, 190, 145),
-
-    decay = Color3.fromRGB(150, 95, 65)
-
-}
-
-skySettings.Cold = {
-
-    color = Color3.fromRGB(180, 215, 255),
-
-    decay = Color3.fromRGB(100, 135, 190)
-
-}
-
-skySettings.Pink = {
-
-    color = Color3.fromRGB(255, 195, 220),
-
-    decay = Color3.fromRGB(180, 110, 150)
-
-}
-
-skySettings.Purple = {
-
-    color = Color3.fromRGB(205, 180, 255),
-
-    decay = Color3.fromRGB(115, 90, 165)
-
-}
-
-skySettings.Blue = {
-
-    color = Color3.fromRGB(155, 195, 255),
-
-    decay = Color3.fromRGB(80, 110, 175)
-
-}
-
-skySettings.Nature = {
-
-    color = Color3.fromRGB(185, 225, 185),
-
-    decay = Color3.fromRGB(90, 135, 90)
-
-}
-
-skySettings.Vintage = {
-
-    color = Color3.fromRGB(220, 200, 165),
-
-    decay = Color3.fromRGB(145, 120, 85)
-
-}
-
-skySettings.Dark = {
-
-    color = Color3.fromRGB(110, 115, 145),
-
-    decay = Color3.fromRGB(65, 65, 90)
-
-}
-
-skySettings.Pastel = {
-
-    color = Color3.fromRGB(225, 220, 255),
-
-    decay = Color3.fromRGB(155, 150, 195)
-
-}
-
-skySettings.Neon = {
-
-    color = Color3.fromRGB(120, 100, 190),
-
-    decay = Color3.fromRGB(65, 45, 125)
-
-}
-
-skySettings.Grey = {
-
-    color = Color3.fromRGB(190, 195, 205),
-
-    decay = Color3.fromRGB(110, 115, 125)
-
-}
-
-skySettings.Bright = {
-
-    color = Color3.fromRGB(245, 245, 255),
-
-    decay = Color3.fromRGB(180, 185, 200)
-
-}
-
-skySettings.Horror = {
-
-    color = Color3.fromRGB(105, 125, 110),
-
-    decay = Color3.fromRGB(45, 65, 50)
-
-}
-
-skySettings.Realistic = {
-
-    color = Color3.fromRGB(220, 225, 230),
-
-    decay = Color3.fromRGB(150, 155, 160)
-
-}
-
---========================================================
-
--- APPLY FILTER
-
---========================================================
-
-local selectedFilter = nil
-
-local function applySky(category)
-
-    local settings = skySettings[category]
-
-    if not settings then
-
-        return
-
-    end
-
-    existingAtmosphere.Color = settings.color
-
-    existingAtmosphere.Decay = settings.decay
-
-    existingAtmosphere.Density = 0.25
-
-    existingAtmosphere.Haze = 1.2
-
-    existingAtmosphere.Glare = 0.1
-
-    Lighting.Ambient = settings.decay:Lerp(settings.color, 0.35)
-
-    Lighting.OutdoorAmbient = settings.color:Lerp(settings.decay, 0.25)
-
-end
-
-local function resetVisuals()
-
-    colorEffect.Enabled = false
-
-    bloomEffect.Enabled = false
-
-    raysEffect.Enabled = false
-
-    depthEffect.Enabled = false
-
-    Lighting.Ambient = originalLighting.Ambient
-
-    Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
-
-    Lighting.Brightness = originalLighting.Brightness
-
-    Lighting.ExposureCompensation = originalLighting.ExposureCompensation
-
-    Lighting.ClockTime = originalLighting.ClockTime
-
-    Lighting.FogColor = originalLighting.FogColor
-
-    Lighting.FogEnd = originalLighting.FogEnd
-
-    Lighting.FogStart = originalLighting.FogStart
-
-    Lighting.GlobalShadows = originalLighting.GlobalShadows
-
-    if originalAtmosphere then
-
-        local obj = originalAtmosphere.object
-
-        if obj and obj.Parent then
-
-            obj.Color = originalAtmosphere.Color
-
-            obj.Decay = originalAtmosphere.Decay
-
-            obj.Density = originalAtmosphere.Density
-
-            obj.Haze = originalAtmosphere.Haze
-
-            obj.Glare = originalAtmosphere.Glare
-
-            obj.Offset = originalAtmosphere.Offset
-
-        end
-
-    elseif createdAtmosphere and existingAtmosphere then
-
-        existingAtmosphere.Density = 0
-
-        existingAtmosphere.Haze = 0
-
-        existingAtmosphere.Glare = 0
-
-    end
-
-end
-
-local function applyFilter(filter)
-
-    if not filter then
-
-        return
-
-    end
-
-    selectedFilter = filter
-
-    resetVisuals()
-
-    colorEffect.Enabled = true
-
-    colorEffect.TintColor = filter.tint
-
-    colorEffect.Saturation = filter.saturation
-
-    colorEffect.Contrast = filter.contrast
-
-    colorEffect.Brightness = filter.brightness
-
-    bloomEffect.Enabled = true
-
-    bloomEffect.Intensity = 0.25
-
-    bloomEffect.Size = 24
-
-    bloomEffect.Threshold = 1.1
-
-    raysEffect.Enabled = true
-
-    raysEffect.Intensity = 0.08
-
-    raysEffect.Spread = 0.8
-
-    depthEffect.Enabled = false
-
-    applySky(filter.category)
-
-end
-
---========================================================
-
-
---========================================================
--- PLAYER ESP CORE
---========================================================
-
-local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-local espToggleButton = nil
-local ESPEnabled = true
-local ESPObjects = {}
-local ESPPlayerConnections = {}
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
-local ESP_COLOR = Color3.fromRGB(255, 65, 65)
-local ESP_TEXT_COLOR = Color3.fromRGB(255, 255, 255)
-local DISPLAY_NAME_SIZE = 14
-local DISPLAY_NAME_WIDTH = 220
-local DISPLAY_NAME_HEIGHT = 28
-
-local function removePlayerESP(targetPlayer)
-    local data = ESPObjects[targetPlayer]
-    if not data then return end
-
-    if data.Highlight then data.Highlight:Destroy() end
-    if data.Billboard then data.Billboard:Destroy() end
-    ESPObjects[targetPlayer] = nil
+-- Clean up older copies
+local oldGui = PlayerGui:FindFirstChild("TheUnionHub")
+if oldGui then
+    oldGui:Destroy()
 end
 
-local function createPlayerESP(targetPlayer)
-    if not running or targetPlayer == LocalPlayer then return end
+-- Global cleanup / destroy tracking
+local activeConnections = {}
+local function addConnection(conn)
+    table.insert(activeConnections, conn)
+    return conn
+end
 
-    local character = targetPlayer.Character
-    if not character then return end
+-- Forward declarations for GUI destruction & ESP toggle
+local gui, destroyAll, toggleFriendESP, cleanupSubmerge, toggleSubmerge
 
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local root = character:FindFirstChild("HumanoidRootPart")
-    if not humanoid or not root then return end
+-- Save original sky & lighting settings for reset functionality
+local originalSky = Lighting:FindFirstChildOfClass("Sky") and Lighting:FindFirstChildOfClass("Sky"):Clone() or nil
+local originalLightingState = {
+    ClockTime = Lighting.ClockTime,
+    Brightness = Lighting.Brightness,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+    Ambient = Lighting.Ambient,
+    GlobalShadows = Lighting.GlobalShadows,
+    FogColor = Lighting.FogColor,
+    FogEnd = Lighting.FogEnd,
+    FogStart = Lighting.FogStart
+}
 
-    local old = ESPObjects[targetPlayer]
-    if old and old.Character == character then
-        old.Highlight.Enabled = ESPEnabled
-        old.Billboard.Enabled = ESPEnabled
-        if old.Label then
-            old.Label.Text = targetPlayer.DisplayName
+-- Safe HTTP Request Helper
+local function httpRequest(options)
+    local req = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+    if req then
+        local success, res = pcall(function() return req(options) end)
+        if success and res then return res end
+    else
+        local success, res = pcall(function() return game:HttpGet(options.Url) end)
+        if success then return { Success = true, Body = res } end
+    end
+    return nil
+end
+
+--========================================================
+-- MAIN GUI CREATION
+--========================================================
+
+gui = Instance.new("ScreenGui")
+gui.Name = "TheUnionHub"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 999
+gui.Parent = PlayerGui
+
+-- Main Container Frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainHub"
+mainFrame.Size = UDim2.fromOffset(460, 530)
+mainFrame.Position = UDim2.new(0.5, -230, 0.5, -235)
+mainFrame.BackgroundColor3 = Color3.fromRGB(12, 15, 22)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.ClipsDescendants = false
+mainFrame.Parent = gui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = mainFrame
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(0, 180, 255)
+mainStroke.Thickness = 2
+mainStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+mainStroke.Parent = mainFrame
+
+--========================================================
+-- ADVANCED ROBOTIC FRAME DECORATIONS & THEME
+--========================================================
+
+local leftConduit = Instance.new("Frame")
+leftConduit.Size = UDim2.fromOffset(4, 380)
+leftConduit.Position = UDim2.fromOffset(-8, 90)
+leftConduit.BackgroundColor3 = Color3.fromRGB(0, 210, 255)
+leftConduit.BorderSizePixel = 0
+leftConduit.Parent = mainFrame
+Instance.new("UICorner", leftConduit).CornerRadius = UDim.new(1, 0)
+
+local rightConduit = Instance.new("Frame")
+rightConduit.Size = UDim2.fromOffset(4, 380)
+rightConduit.Position = UDim2.new(1, 4, 0, 90)
+rightConduit.BackgroundColor3 = Color3.fromRGB(0, 210, 255)
+rightConduit.BorderSizePixel = 0
+rightConduit.Parent = mainFrame
+Instance.new("UICorner", rightConduit).CornerRadius = UDim.new(1, 0)
+
+task.spawn(function()
+    while gui and gui.Parent and task.wait(1.2) do
+        if leftConduit and rightConduit then
+            TweenService:Create(leftConduit, TweenInfo.new(0.5), {BackgroundColor3 = Color3.fromRGB(255, 100, 0)}):Play()
+            TweenService:Create(rightConduit, TweenInfo.new(0.5), {BackgroundColor3 = Color3.fromRGB(255, 100, 0)}):Play()
+            task.wait(0.5)
+            TweenService:Create(leftConduit, TweenInfo.new(0.5), {BackgroundColor3 = Color3.fromRGB(0, 210, 255)}):Play()
+            TweenService:Create(rightConduit, TweenInfo.new(0.5), {BackgroundColor3 = Color3.fromRGB(0, 210, 255)}):Play()
         end
-        return
+    end
+end)
+
+local function createHexBolt(pos)
+    local bolt = Instance.new("Frame")
+    bolt.Size = UDim2.fromOffset(8, 8)
+    bolt.Position = pos
+    bolt.BackgroundColor3 = Color3.fromRGB(140, 160, 190)
+    bolt.BorderSizePixel = 0
+    bolt.Parent = mainFrame
+    Instance.new("UICorner", bolt).CornerRadius = UDim.new(1, 0)
+    local stroke = Instance.new("UIStroke", bolt)
+    stroke.Color = Color3.fromRGB(40, 50, 70)
+    stroke.Thickness = 1
+    return bolt
+end
+
+createHexBolt(UDim2.fromOffset(6, 6))
+createHexBolt(UDim2.new(1, -14, 0, 6))
+createHexBolt(UDim2.fromOffset(6, 516))
+createHexBolt(UDim2.new(1, -14, 1, -14))
+
+local hazardLine = Instance.new("Frame")
+hazardLine.Size = UDim2.new(1, -20, 0, 2)
+hazardLine.Position = UDim2.new(0, 10, 1, -6)
+hazardLine.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+hazardLine.BorderSizePixel = 0
+hazardLine.Parent = mainFrame
+
+--========================================================
+-- THEUNION HEADER DESIGN
+--========================================================
+
+local robotHead = Instance.new("Frame")
+robotHead.Name = "RobotHead"
+robotHead.Size = UDim2.fromOffset(210, 50)
+robotHead.Position = UDim2.new(0.5, -105, 0, -42)
+robotHead.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
+robotHead.BorderSizePixel = 0
+robotHead.Parent = mainFrame
+
+local headCorner = Instance.new("UICorner")
+headCorner.CornerRadius = UDim.new(0, 14)
+headCorner.Parent = robotHead
+
+local headStroke = Instance.new("UIStroke")
+headStroke.Color = Color3.fromRGB(0, 180, 255)
+headStroke.Thickness = 1.8
+headStroke.Parent = robotHead
+
+local leftEar = Instance.new("Frame")
+leftEar.Size = UDim2.fromOffset(10, 24)
+leftEar.Position = UDim2.new(0, -10, 0.5, -12)
+leftEar.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+leftEar.BorderSizePixel = 0
+leftEar.Parent = robotHead
+Instance.new("UICorner", leftEar).CornerRadius = UDim.new(0, 4)
+
+local rightEar = Instance.new("Frame")
+rightEar.Size = UDim2.fromOffset(10, 24)
+rightEar.Position = UDim2.new(1, 0, 0.5, -12)
+rightEar.BackgroundColor3 = Color3.fromRGB(0, 180, 255)
+rightEar.BorderSizePixel = 0
+rightEar.Parent = robotHead
+Instance.new("UICorner", rightEar).CornerRadius = UDim.new(0, 4)
+
+local visor = Instance.new("Frame")
+visor.Size = UDim2.new(0.85, 0, 0.45, 0)
+visor.Position = UDim2.new(0.075, 0, 0.38, 0)
+visor.BackgroundColor3 = Color3.fromRGB(8, 10, 16)
+visor.BorderSizePixel = 0
+visor.Parent = robotHead
+Instance.new("UICorner", visor).CornerRadius = UDim.new(0, 8)
+
+local eyeLeft = Instance.new("Frame")
+eyeLeft.Size = UDim2.fromOffset(26, 10)
+eyeLeft.Position = UDim2.new(0.2, -13, 0.5, -5)
+eyeLeft.BackgroundColor3 = Color3.fromRGB(0, 230, 255)
+eyeLeft.BorderSizePixel = 0
+eyeLeft.Parent = visor
+Instance.new("UICorner", eyeLeft).CornerRadius = UDim.new(0, 4)
+
+local eyeRight = Instance.new("Frame")
+eyeRight.Size = UDim2.fromOffset(26, 10)
+eyeRight.Position = UDim2.new(0.8, -13, 0.5, -5)
+eyeRight.BackgroundColor3 = Color3.fromRGB(0, 230, 255)
+eyeRight.BorderSizePixel = 0
+eyeRight.Parent = visor
+Instance.new("UICorner", eyeRight).CornerRadius = UDim.new(0, 4)
+
+local forehead = Instance.new("TextLabel")
+forehead.Size = UDim2.new(1, 0, 0, 16)
+forehead.Position = UDim2.fromOffset(0, 3)
+forehead.BackgroundTransparency = 1
+forehead.Text = "⚡ THEUNION HUB"
+forehead.TextColor3 = Color3.fromRGB(200, 225, 255)
+forehead.Font = Enum.Font.GothamBold
+forehead.TextSize = 11
+forehead.Parent = robotHead
+
+task.spawn(function()
+    while gui and gui.Parent and task.wait(1.5) do
+        if eyeLeft and eyeRight then
+            TweenService:Create(eyeLeft, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+            TweenService:Create(eyeRight, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+            task.wait(0.15)
+            TweenService:Create(eyeLeft, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(0, 230, 255)}):Play()
+            TweenService:Create(eyeRight, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(0, 230, 255)}):Play()
+        end
+    end
+end)
+
+--========================================================
+-- CONTROL HEADER BAR & PLAYER COUNTER
+--========================================================
+
+local header = Instance.new("Frame")
+header.Name = "Header"
+header.Size = UDim2.new(1, 0, 0, 42)
+header.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
+header.BorderSizePixel = 0
+header.Parent = mainFrame
+
+local headerCorner = Instance.new("UICorner")
+headerCorner.CornerRadius = UDim.new(0, 10)
+headerCorner.Parent = header
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -220, 1, 0)
+titleLabel.Position = UDim2.fromOffset(14, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "ROBOTIC SYSTEM v3.7"
+titleLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 12
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = header
+
+local playerCounterLabel = Instance.new("TextLabel")
+playerCounterLabel.Size = UDim2.fromOffset(65, 24)
+playerCounterLabel.Position = UDim2.new(1, -215, 0, 9)
+playerCounterLabel.BackgroundColor3 = Color3.fromRGB(24, 30, 45)
+playerCounterLabel.TextColor3 = Color3.fromRGB(0, 230, 255)
+playerCounterLabel.Font = Enum.Font.GothamBold
+playerCounterLabel.TextSize = 10
+playerCounterLabel.Text = "👤 0/0"
+playerCounterLabel.BorderSizePixel = 0
+playerCounterLabel.Parent = header
+Instance.new("UICorner", playerCounterLabel).CornerRadius = UDim.new(0, 6)
+
+local function updatePlayerCounter()
+    local currentCount = #Players:GetPlayers()
+    local maxCount = Players.MaxPlayers
+    playerCounterLabel.Text = "👤 " .. tostring(currentCount) .. "/" .. tostring(maxCount)
+end
+
+addConnection(Players.PlayerAdded:Connect(updatePlayerCounter))
+addConnection(Players.PlayerRemoving:Connect(updatePlayerCounter))
+updatePlayerCounter()
+
+local function createIconButton(text, size, pos, bg, hoverBg)
+    local btn = Instance.new("TextButton")
+    btn.Size = size
+    btn.Position = pos
+    btn.BackgroundColor3 = bg
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Text = text
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.BorderSizePixel = 0
+    btn.AutoButtonColor = false
+    btn.Parent = header
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = hoverBg}):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = bg}):Play()
+    end)
+
+    return btn
+end
+
+local rejoinBtn = createIconButton("🔄 Rejoin", UDim2.fromOffset(70, 26), UDim2.new(1, -145, 0, 8), Color3.fromRGB(35, 75, 130), Color3.fromRGB(50, 100, 170))
+local minimizeBtn = createIconButton("—", UDim2.fromOffset(28, 26), UDim2.new(1, -68, 0, 8), Color3.fromRGB(28, 33, 48), Color3.fromRGB(50, 58, 80))
+local closeBtn = createIconButton("✕", UDim2.fromOffset(28, 26), UDim2.new(1, -34, 0, 8), Color3.fromRGB(150, 45, 55), Color3.fromRGB(200, 60, 70))
+
+rejoinBtn.MouseButton1Click:Connect(function()
+    rejoinBtn.Text = "Joining..."
+    if #Players:GetPlayers() <= 1 then
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    else
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+    end
+end)
+
+-- Navigation Bar
+local navBar = Instance.new("Frame")
+navBar.Size = UDim2.new(1, -20, 0, 36)
+navBar.Position = UDim2.fromOffset(10, 48)
+navBar.BackgroundTransparency = 1
+navBar.Parent = mainFrame
+
+local navLayout = Instance.new("UIListLayout")
+navLayout.FillDirection = Enum.FillDirection.Horizontal
+navLayout.Padding = UDim.new(0, 3)
+navLayout.SortOrder = Enum.SortOrder.LayoutOrder
+navLayout.Parent = navBar
+
+local tabButtons = {}
+local tabContents = {}
+
+local function styleButton(btn, active)
+    local targetColor = active and Color3.fromRGB(0, 120, 200) or Color3.fromRGB(20, 24, 34)
+    local strokeColor = active and Color3.fromRGB(0, 220, 255) or Color3.fromRGB(35, 42, 60)
+    
+    TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = targetColor}):Play()
+    local stroke = btn:FindFirstChildOfClass("UIStroke")
+    if stroke then
+        TweenService:Create(stroke, TweenInfo.new(0.2), {Color = strokeColor}):Play()
+    end
+end
+
+local function createTabButton(name, widthScale)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(widthScale, -2, 1, 0)
+    btn.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
+    btn.TextColor3 = Color3.fromRGB(240, 240, 255)
+    btn.Text = name
+    btn.Font = Enum.Font.GothamSemibold
+    btn.TextSize = 10
+    btn.BorderSizePixel = 0
+    btn.AutoButtonColor = false
+    btn.Parent = navBar
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+
+    local btnStroke = Instance.new("UIStroke")
+    btnStroke.Color = Color3.fromRGB(35, 42, 60)
+    btnStroke.Thickness = 1
+    btnStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    btnStroke.Parent = btn
+
+    local contentFrame = Instance.new("Frame")
+    contentFrame.Name = name .. "Tab"
+    contentFrame.Size = UDim2.new(1, -24, 1, -100)
+    contentFrame.Position = UDim2.fromOffset(12, 92)
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Visible = false
+    contentFrame.Parent = mainFrame
+
+    tabButtons[name] = btn
+    tabContents[name] = contentFrame
+
+    btn.MouseButton1Click:Connect(function()
+        for tName, tFrame in pairs(tabContents) do
+            local isActive = (tName == name)
+            tFrame.Visible = isActive
+            styleButton(tabButtons[tName], isActive)
+        end
+    end)
+
+    return contentFrame
+end
+
+local mainTab = createTabButton("Main", 0.12)
+local friendsTab = createTabButton("Friends", 0.13)
+local serversTab = createTabButton("Servers", 0.13)
+local searchTab = createTabButton("Search", 0.14)
+local skyTab = createTabButton("Sky", 0.12)
+local filterTab = createTabButton("Filters", 0.12)
+local specTab = createTabButton("Spectate", 0.12)
+local submergeTab = createTabButton("Submerge", 0.12)
+
+tabContents["Main"].Visible = true
+styleButton(tabButtons["Main"], true)
+
+--========================================================
+-- BADGES (FRIENDS & SERVERS)
+--========================================================
+local friendsBtn = tabButtons["Friends"]
+
+local badgeFrame = Instance.new("Frame")
+badgeFrame.Name = "FriendBadge"
+badgeFrame.Size = UDim2.fromOffset(16, 16)
+badgeFrame.Position = UDim2.new(1, -16, 0, -4)
+badgeFrame.BackgroundColor3 = Color3.fromRGB(255, 60, 90)
+badgeFrame.BorderSizePixel = 0
+badgeFrame.ZIndex = 5
+badgeFrame.Parent = friendsBtn
+
+Instance.new("UICorner", badgeFrame).CornerRadius = UDim.new(1, 0)
+local badgeStroke = Instance.new("UIStroke", badgeFrame)
+badgeStroke.Color = Color3.fromRGB(255, 255, 255)
+badgeStroke.Thickness = 1.2
+
+local badgeText = Instance.new("TextLabel")
+badgeText.Size = UDim2.fromScale(1, 1)
+badgeText.BackgroundTransparency = 1
+badgeText.Text = "0"
+badgeText.TextColor3 = Color3.fromRGB(255, 255, 255)
+badgeText.Font = Enum.Font.GothamBold
+badgeText.TextSize = 9
+badgeText.ZIndex = 6
+badgeText.Parent = badgeFrame
+
+local serversBtn = tabButtons["Servers"]
+local serverBadgeFrame = Instance.new("Frame")
+serverBadgeFrame.Name = "ServerFriendBadge"
+serverBadgeFrame.Size = UDim2.fromOffset(16, 16)
+serverBadgeFrame.Position = UDim2.new(1, -16, 0, -4)
+serverBadgeFrame.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
+serverBadgeFrame.BorderSizePixel = 0
+serverBadgeFrame.ZIndex = 5
+serverBadgeFrame.Visible = false
+serverBadgeFrame.Parent = serversBtn
+
+Instance.new("UICorner", serverBadgeFrame).CornerRadius = UDim.new(1, 0)
+local serverBadgeStroke = Instance.new("UIStroke", serverBadgeFrame)
+serverBadgeStroke.Color = Color3.fromRGB(255, 255, 255)
+serverBadgeStroke.Thickness = 1.2
+
+local serverBadgeText = Instance.new("TextLabel")
+serverBadgeText.Size = UDim2.fromScale(1, 1)
+serverBadgeText.BackgroundTransparency = 1
+serverBadgeText.Text = "0"
+serverBadgeText.TextColor3 = Color3.fromRGB(255, 255, 255)
+serverBadgeText.Font = Enum.Font.GothamBold
+serverBadgeText.TextSize = 9
+serverBadgeText.ZIndex = 6
+serverBadgeText.Parent = serverBadgeFrame
+
+local function createContentButton(parent, text, size, pos, defaultBg)
+    local bg = defaultBg or Color3.fromRGB(24, 28, 40)
+    local btn = Instance.new("TextButton")
+    btn.Size = size
+    btn.Position = pos
+    btn.BackgroundColor3 = bg
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Text = text
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 11
+    btn.BorderSizePixel = 0
+    btn.AutoButtonColor = false
+    btn.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(45, 55, 80)
+    stroke.Thickness = 1
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Parent = btn
+
+    return btn, stroke
+end
+
+--========================================================
+-- GLOBAL DESTROY / KILLSWITCH FUNCTION [KEYBIND P]
+--========================================================
+destroyAll = function()
+    if cleanupSubmerge then
+        pcall(cleanupSubmerge)
+    end
+    for _, conn in ipairs(activeConnections) do
+        if conn and typeof(conn) == "RBXScriptConnection" then
+            pcall(function() conn:Disconnect() end)
+        end
+    end
+    pcall(function()
+        for _, obj in ipairs(Lighting:GetChildren()) do
+            if obj.Name:find("Hub") or obj.Name:find("RTX") or obj.Name:find("CustomSky") then
+                obj:Destroy()
+            end
+        end
+    end)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character then
+            local hl = p.Character:FindFirstChild("ESPHighlight")
+            local fhl = p.Character:FindFirstChild("FriendHighlight")
+            if hl then hl:Destroy() end
+            if fhl then fhl:Destroy() end
+        end
+    end
+    if gui then
+        gui:Destroy()
+    end
+end
+
+--========================================================
+-- MAIN TAB: BRIGHTNESS, ESP, MOVEMENT, EMOTES
+--========================================================
+do
+    local mainScroll = Instance.new("ScrollingFrame")
+    mainScroll.Size = UDim2.new(1, 0, 1, -5)
+    mainScroll.Position = UDim2.fromOffset(0, 5)
+    mainScroll.BackgroundTransparency = 1
+    mainScroll.BorderSizePixel = 0
+    mainScroll.ScrollBarThickness = 4
+    mainScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    mainScroll.CanvasSize = UDim2.new()
+    mainScroll.Parent = mainTab
+
+    local mainLayout = Instance.new("UIListLayout")
+    mainLayout.Padding = UDim.new(0, 8)
+    mainLayout.Parent = mainScroll
+
+    -- 1. Brightness
+    local originalLighting = {
+        Brightness = Lighting.Brightness,
+        ClockTime = Lighting.ClockTime,
+        Ambient = Lighting.Ambient,
+        OutdoorAmbient = Lighting.OutdoorAmbient,
+        GlobalShadows = Lighting.GlobalShadows,
+        ExposureCompensation = Lighting.ExposureCompensation
+    }
+    local brightEnabled = false
+    local brightBtn, brightStroke = createContentButton(mainScroll, "Brightness: OFF [L]", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(28, 33, 46))
+
+    local function toggleBrightness()
+        brightEnabled = not brightEnabled
+        if brightEnabled then
+            Lighting.Brightness = 3
+            Lighting.ClockTime = 14
+            Lighting.Ambient = Color3.fromRGB(200, 200, 200)
+            Lighting.GlobalShadows = false
+            brightBtn.Text = "Brightness: ON [L]"
+            TweenService:Create(brightBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
+            TweenService:Create(brightStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
+        else
+            for prop, val in pairs(originalLighting) do pcall(function() Lighting[prop] = val end) end
+            brightBtn.Text = "Brightness: OFF [L]"
+            TweenService:Create(brightBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
+            TweenService:Create(brightStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(45, 55, 80)}):Play()
+        end
+    end
+    brightBtn.MouseButton1Click:Connect(toggleBrightness)
+    addConnection(UserInputService.InputBegan:Connect(function(input, processed)
+        if processed or UserInputService:GetFocusedTextBox() then return end
+        if input.KeyCode == Enum.KeyCode.L then toggleBrightness() end
+    end))
+
+    -- 2. Player ESPlocal espEnabled = true
+    local espObjects = {}
+
+    local function removeESP(player)
+        local data = espObjects[player]
+        if data then
+            if data.Highlight then data.Highlight:Destroy() end
+            if data.Billboard then data.Billboard:Destroy() end
+            espObjects[player] = nil
+        end
     end
 
-    removePlayerESP(targetPlayer)
+    local function createESP(player)
+        if player == LocalPlayer then return end
+        removeESP(player)
+        local char = player.Character
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
 
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "UniversalStudio_PlayerHighlight"
-    highlight.Adornee = character
-    highlight.FillColor = ESP_COLOR
-    highlight.OutlineColor = Color3.new(1, 1, 1)
-    highlight.FillTransparency = 0.65
-    highlight.OutlineTransparency = 0
-    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.Enabled = ESPEnabled
-    highlight.Parent = character
+        local highlight = Instance.new("Highlight")
+        highlight.Name = "ESPHighlight"
+        highlight.Adornee = char
+        highlight.FillColor = Color3.fromRGB(0, 200, 255)
+        highlight.OutlineColor = Color3.new(1, 1, 1)
+        highlight.FillTransparency = 0.65
+        highlight.OutlineTransparency = 0
+        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.Enabled = espEnabled
+        highlight.Parent = char
 
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "UniversalStudio_PlayerName"
-    billboard.Adornee = root
-    billboard.Size = UDim2.fromOffset(DISPLAY_NAME_WIDTH, DISPLAY_NAME_HEIGHT)
-    billboard.StudsOffset = Vector3.new(0, 3, 0)
-    billboard.AlwaysOnTop = true
-    billboard.Enabled = ESPEnabled
-    billboard.Parent = playerGui
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "ESPName"
+        billboard.Adornee = root
+        billboard.Size = UDim2.fromOffset(200, 30)
+        billboard.StudsOffset = Vector3.new(0, 3.2, 0)
+        billboard.AlwaysOnTop = true
+        billboard.Enabled = espEnabled
+        billboard.Parent = PlayerGui
 
-    local label = Instance.new("TextLabel")
-    label.Name = "DisplayName"
-    label.Size = UDim2.fromScale(1, 1)
-    label.BackgroundTransparency = 1
-    label.Text = targetPlayer.DisplayName
-    label.TextColor3 = ESP_TEXT_COLOR
-    label.TextStrokeColor3 = Color3.new(0, 0, 0)
-    label.TextStrokeTransparency = 0
-    label.TextScaled = false
-    label.TextSize = DISPLAY_NAME_SIZE
-    label.TextWrapped = false
-    label.TextTruncate = Enum.TextTruncate.AtEnd
-    label.Font = Enum.Font.GothamBold
-    label.Parent = billboard
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundTransparency = 1
+        label.Text = player.DisplayName .. " (@" .. player.Name .. ")"
+        label.TextColor3 = Color3.fromRGB(255, 255, 255)
+        label.TextStrokeTransparency = 0.2
+        label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        label.TextSize = 13
+        label.Font = Enum.Font.GothamBold
+        label.Parent = billboard
 
-    ESPObjects[targetPlayer] = {
-        Character = character,
-        Highlight = highlight,
-        Billboard = billboard,
-        Label = label
-    }
-end
+        espObjects[player] = { Highlight = highlight, Billboard = billboard }
+    end
 
-local function refreshPlayerESP()
-    for _, targetPlayer in ipairs(Players:GetPlayers()) do
-        if targetPlayer ~= LocalPlayer then
-            if ESPEnabled then
-                createPlayerESP(targetPlayer)
-            else
-                local data = ESPObjects[targetPlayer]
+    local toggleEspBtn, espStroke = createContentButton(mainScroll, "Player ESP: ON [R]", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(35, 140, 85))
+    TweenService:Create(espStroke, TweenInfo.new(0.01), {Color = Color3.fromRGB(60, 200, 120)}):Play()
+
+    local function toggleESP()
+        espEnabled = not espEnabled
+        if espEnabled then
+            toggleEspBtn.Text = "Player ESP: ON [R]"
+            TweenService:Create(toggleEspBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
+            TweenService:Create(espStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
+        else
+            toggleEspBtn.Text = "Player ESP: OFF [R]"
+            TweenService:Create(toggleEspBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
+            TweenService:Create(espStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(45, 55, 80)}):Play()
+        end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                local data = espObjects[p]
                 if data then
-                    data.Highlight.Enabled = false
-                    data.Billboard.Enabled = false
+                    data.Highlight.Enabled = espEnabled
+                    data.Billboard.Enabled = espEnabled
+                elseif espEnabled then
+                    createESP(p)
                 end
             end
         end
     end
-end
+    toggleEspBtn.MouseButton1Click:Connect(toggleESP)
+    addConnection(UserInputService.InputBegan:Connect(function(input, processed)
+        if processed or UserInputService:GetFocusedTextBox() then return end
+        if input.KeyCode == Enum.KeyCode.R then toggleESP() end
+    end))
 
-local function togglePlayerESP()
-    if not running then return end
-    ESPEnabled = not ESPEnabled
-    refreshPlayerESP()
-    if espToggleButton then
-        espToggleButton.Text = ESPEnabled and "PLAYER ESP: ON" or "PLAYER ESP: OFF"
-    end
-end
-
-local function setupESPPlayer(targetPlayer)
-    if targetPlayer == LocalPlayer or ESPPlayerConnections[targetPlayer] then
-        return
+    local function onCharacterAdded(p)
+        task.wait(1)
+        if espEnabled then createESP(p) end
     end
 
-    local playerConnections = {}
-    ESPPlayerConnections[targetPlayer] = playerConnections
+    addConnection(Players.PlayerRemoving:Connect(removeESP))
 
-    table.insert(playerConnections, targetPlayer.CharacterAdded:Connect(function(character)
-        removePlayerESP(targetPlayer)
-        if not running or not ESPEnabled then return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            addConnection(p.CharacterAdded:Connect(function()
+                onCharacterAdded(p)
+            end))
+            if p.Character then
+                task.spawn(function()
+                    if espEnabled then createESP(p) end
+                end)
+            end
+        end
+    end
 
-        task.spawn(function()
-            local root = character:WaitForChild("HumanoidRootPart", 10)
-            if root and running and ESPEnabled then
-                createPlayerESP(targetPlayer)
+    addConnection(Players.PlayerAdded:Connect(function(p)
+        if p ~= LocalPlayer then
+            addConnection(p.CharacterAdded:Connect(function()
+                onCharacterAdded(p)
+            end))
+        end
+    end))
+
+    -- 3. Movement (Fly & Noclip)
+    local flying = false
+    local flySpeed = 50
+    local bodyGyro, bodyVelocity
+    local flyBtn, flyStroke = createContentButton(mainScroll, "Fly: OFF [F]", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(28, 33, 46))
+
+    local function toggleFly()
+        flying = not flying
+        local char = LocalPlayer.Character
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum then return end
+
+        if flying then
+            hum.PlatformStand = true
+            bodyGyro = Instance.new("BodyGyro", root)
+            bodyGyro.P = 9e4
+            bodyGyro.maxTorque = Vector3.new(9e9, 9e9, 9e9)
+            bodyGyro.cframe = root.CFrame
+
+            bodyVelocity = Instance.new("BodyVelocity", root)
+            bodyVelocity.velocity = Vector3.new(0, 0.1, 0)
+            bodyVelocity.maxForce = Vector3.new(9e9, 9e9, 9e9)
+
+            task.spawn(function()
+                while flying and char and char.Parent and root and root.Parent do
+                    local camera = Workspace.CurrentCamera
+                    local moveDir = Vector3.new()
+                    if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + camera.CFrame.LookVector end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - camera.CFrame.LookVector end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - camera.CFrame.RightVector end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + camera.CFrame.RightVector end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+
+                    bodyGyro.cframe = camera.CFrame
+                    bodyVelocity.velocity = moveDir * flySpeed
+                    RunService.RenderStepped:Wait()
+                end
+            end)
+            flyBtn.Text = "Fly: ON [F]"
+            TweenService:Create(flyBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
+            TweenService:Create(flyStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
+        else
+            hum.PlatformStand = false
+            if bodyGyro then bodyGyro:Destroy() end
+            if bodyVelocity then bodyVelocity:Destroy() end
+            flyBtn.Text = "Fly: OFF [F]"
+            TweenService:Create(flyBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
+            TweenService:Create(flyStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(45, 55, 80)}):Play()
+        end
+    end
+    flyBtn.MouseButton1Click:Connect(toggleFly)
+
+    local noclip = false
+    local noclipConn
+    local noclipBtn, noclipStroke = createContentButton(mainScroll, "Noclip: OFF [N]", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(28, 33, 46))
+
+    local function toggleNoclip()
+        noclip = not noclip
+        if noclip then
+            noclipBtn.Text = "Noclip: ON [N]"
+            TweenService:Create(noclipBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
+            TweenService:Create(noclipStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
+            noclipConn = addConnection(RunService.Stepped:Connect(function()
+                if noclip and LocalPlayer.Character then
+                    for _, v in ipairs(LocalPlayer.Character:GetDescendants()) do
+                        if v:IsA("BasePart") then v.CanCollide = false end
+                    end
+                end
+            end))
+        else
+            noclipBtn.Text = "Noclip: OFF [N]"
+            TweenService:Create(noclipBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
+            TweenService:Create(noclipStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(45, 55, 80)}):Play()
+            if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+        end
+    end
+    noclipBtn.MouseButton1Click:Connect(toggleNoclip)
+
+    addConnection(UserInputService.InputBegan:Connect(function(input, processed)
+        if processed or UserInputService:GetFocusedTextBox() then return end
+        if input.KeyCode == Enum.KeyCode.F then toggleFly()
+        elseif input.KeyCode == Enum.KeyCode.N then toggleNoclip() end
+    end))
+
+    -- 4. Emotes Hub
+    local emotesLoaded = false
+    local loadEmotesBtn = createContentButton(mainScroll, "Load Emote Hub", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(35, 75, 130))
+    loadEmotesBtn.MouseButton1Click:Connect(function()
+        if not emotesLoaded then
+            emotesLoaded = true
+            loadEmotesBtn.Text = "Emote Hub Loaded ✓"
+            task.spawn(function()
+                pcall(function()
+                    loadstring(game:HttpGet("https://raw.githubusercontent.com/7yd7/Hub/refs/heads/Branch/GUIS/Emotes.lua"))()
+                end)
+            end)
+        end
+    end)
+end
+
+--========================================================
+-- MODULE 2: FRIENDS TAB
+--========================================================
+do
+    local friendEspEnabled = true
+    local friendEspObjects = {}
+    local selectedFriend = nil
+    local friendSpectating = false
+
+    local headerStatus = Instance.new("TextLabel")
+    headerStatus.Size = UDim2.new(1, 0, 0, 24)
+    headerStatus.Position = UDim2.fromOffset(0, 4)
+    headerStatus.BackgroundTransparency = 1
+    headerStatus.Text = "Friends in Server: 0"
+    headerStatus.TextColor3 = Color3.fromRGB(0, 220, 255)
+    headerStatus.Font = Enum.Font.GothamBold
+    headerStatus.TextSize = 13
+    headerStatus.Parent = friendsTab
+
+    local toggleFriendEspBtn, friendEspStroke = createContentButton(friendsTab, "Friend ESP: ON [Q]", UDim2.new(1, 0, 0, 34), UDim2.fromOffset(0, 32), Color3.fromRGB(35, 140, 85))
+    TweenService:Create(friendEspStroke, TweenInfo.new(0.01), {Color = Color3.fromRGB(60, 200, 120)}):Play()
+
+    local friendListFrame = Instance.new("ScrollingFrame")
+    friendListFrame.Size = UDim2.new(1, 0, 1, -118)
+    friendListFrame.Position = UDim2.fromOffset(0, 72)
+    friendListFrame.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+    friendListFrame.BorderSizePixel = 0
+    friendListFrame.ScrollBarThickness = 4
+    friendListFrame.CanvasSize = UDim2.new()
+    friendListFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    friendListFrame.Parent = friendsTab
+    Instance.new("UICorner", friendListFrame).CornerRadius = UDim.new(0, 6)
+    local friendListLayout = Instance.new("UIListLayout", friendListFrame)
+    friendListLayout.Padding = UDim.new(0, 4)
+
+    local specFriendBtn = createContentButton(friendsTab, "Spectate Friend", UDim2.new(0.5, -3, 0, 36), UDim2.new(0, 0, 1, -38), Color3.fromRGB(28, 33, 46))
+    local tpFriendBtn = createContentButton(friendsTab, "Teleport to Friend", UDim2.new(0.5, -3, 0, 36), UDim2.new(0.5, 3, 1, -38), Color3.fromRGB(35, 75, 130))
+
+    local function removeFriendESP(player)
+        local data = friendEspObjects[player]
+        if data then
+            if data.Highlight then data.Highlight:Destroy() end
+            if data.Billboard then data.Billboard:Destroy() end
+            friendEspObjects[player] = nil
+        end
+    end
+
+    local function createFriendESP(player)
+        removeFriendESP(player)
+        if not friendEspEnabled then return end
+        local char = player.Character
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        local highlight = Instance.new("Highlight")
+        highlight.Name = "FriendHighlight"
+        highlight.Adornee = char
+        highlight.FillColor = Color3.fromRGB(255, 215, 0)
+        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        highlight.FillTransparency = 0.4
+        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.Enabled = friendEspEnabled
+        highlight.Parent = char
+
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "FriendESPName"
+        billboard.Adornee = root
+        billboard.Size = UDim2.fromOffset(200, 30)
+        billboard.StudsOffset = Vector3.new(0, 3.2, 0)
+        billboard.AlwaysOnTop = true
+        billboard.Enabled = friendEspEnabled
+        billboard.Parent = PlayerGui
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundTransparency = 1
+        label.Text = "⭐ [FRIEND] " .. player.DisplayName
+        label.TextColor3 = Color3.fromRGB(255, 225, 100)
+        label.TextStrokeTransparency = 0.2
+        label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        label.TextSize = 13
+        label.Font = Enum.Font.GothamBold
+        label.Parent = billboard
+
+        friendEspObjects[player] = { Highlight = highlight, Billboard = billboard }
+    end
+
+    local function playFriendJoinSound()
+        local joinSound = Instance.new("Sound")
+        joinSound.SoundId = "rbxassetid://4590662766"
+        joinSound.Volume = 1
+        joinSound.Parent = SoundService
+        joinSound:Play()
+        task.delay(3, function() joinSound:Destroy() end)
+    end
+
+    local function notifyFriendJoin(player)
+        pcall(function()
+            StarterGui:SetCore("SendNotification", {
+                Title = "⭐ Friend Joined!",
+                Text = player.DisplayName .. " (@" .. player.Name .. ") joined the game.",
+                Duration = 5,
+            })
+        end)
+        playFriendJoinSound()
+    end
+
+    local function refreshFriendsList()
+        for _, child in ipairs(friendListFrame:GetChildren()) do
+            if child:IsA("TextButton") then child:Destroy() end
+        end
+
+        local count = 0
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                local isFriend = false
+                pcall(function()
+                    isFriend = p:IsFriendsWith(LocalPlayer.UserId)
+                end)
+
+                if isFriend then
+                    count = count + 1
+                    if friendEspEnabled then
+                        createFriendESP(p)
+                    else
+                        removeFriendESP(p)
+                    end
+
+                    local btn = createContentButton(friendListFrame, "⭐ " .. p.DisplayName .. " (@" .. p.Name .. ")", UDim2.new(1, -6, 0, 32), UDim2.new(), Color3.fromRGB(24, 29, 42))
+                    if selectedFriend == p then
+                        btn.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
+                    end
+                    btn.MouseButton1Click:Connect(function()
+                        selectedFriend = p
+                        headerStatus.Text = "Selected Friend: " .. p.Name
+                        refreshFriendsList()
+                    end)
+                else
+                    removeFriendESP(p)
+                end
+            end
+        end
+
+        badgeText.Text = tostring(count)
+        headerStatus.Text = "Friends in Server: " .. count
+    end
+
+    toggleFriendESP = function()
+        friendEspEnabled = not friendEspEnabled
+        if friendEspEnabled then
+            toggleFriendEspBtn.Text = "Friend ESP: ON [Q]"
+            TweenService:Create(toggleFriendEspBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
+            TweenService:Create(friendEspStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
+        else
+            toggleFriendEspBtn.Text = "Friend ESP: OFF [Q]"
+            TweenService:Create(toggleFriendEspBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
+            TweenService:Create(friendEspStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(45, 55, 80)}):Play()
+            for p, _ in pairs(friendEspObjects) do
+                removeFriendESP(p)
+            end
+        end
+        refreshFriendsList()
+    end
+
+    toggleFriendEspBtn.MouseButton1Click:Connect(toggleFriendESP)
+
+    specFriendBtn.MouseButton1Click:Connect(function()
+        local camera = Workspace.CurrentCamera
+        if not friendSpectating then
+            if selectedFriend and selectedFriend.Character and selectedFriend.Character:FindFirstChildOfClass("Humanoid") then
+                camera.CameraSubject = selectedFriend.Character:FindFirstChildOfClass("Humanoid")
+                friendSpectating = true
+                specFriendBtn.Text = "Stop Spectating"
+                headerStatus.Text = "Watching Friend: " .. selectedFriend.Name
+            else
+                headerStatus.Text = "Select a valid friend first!"
+            end
+        else
+            friendSpectating = false
+            specFriendBtn.Text = "Spectate Friend"
+            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+                camera.CameraSubject = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            end
+            headerStatus.Text = "Spectating stopped"
+        end
+    end)
+
+    tpFriendBtn.MouseButton1Click:Connect(function()
+        if selectedFriend and selectedFriend.Character then
+            local targetRoot = selectedFriend.Character:FindFirstChild("HumanoidRootPart")
+            local localRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if targetRoot and localRoot then
+                localRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 3)
+                headerStatus.Text = "Teleported to " .. selectedFriend.Name
+            else
+                headerStatus.Text = "Friend position unavailable!"
+            end
+        else
+            headerStatus.Text = "Select a friend to teleport!"
+        end
+    end)
+
+    addConnection(Players.PlayerAdded:Connect(function(p)
+        local isFriend = false
+        pcall(function()
+            isFriend = p:IsFriendsWith(LocalPlayer.UserId)
+        end)
+        if isFriend then
+            notifyFriendJoin(p)
+        end
+        refreshFriendsList()
+    end))
+
+    addConnection(Players.PlayerRemoving:Connect(function(p)
+        if p == selectedFriend then selectedFriend = nil end
+        removeFriendESP(p)
+        refreshFriendsList()
+    end))
+
+    task.spawn(function()
+        while gui and gui.Parent do
+            refreshFriendsList()
+            task.wait(5)
+        end
+    end)
+end
+
+--========================================================
+-- MODULE 2.5: SERVERS TAB (SERVER BROWSER & FRIEND DETECTOR)
+--========================================================
+do
+    local serverHeaderStatus = Instance.new("TextLabel")
+    serverHeaderStatus.Size = UDim2.new(1, -100, 0, 24)
+    serverHeaderStatus.Position = UDim2.fromOffset(0, 4)
+    serverHeaderStatus.BackgroundTransparency = 1
+    serverHeaderStatus.Text = "Public Server Browser"
+    serverHeaderStatus.TextColor3 = Color3.fromRGB(0, 220, 255)
+    serverHeaderStatus.Font = Enum.Font.GothamBold
+    serverHeaderStatus.TextSize = 13
+    serverHeaderStatus.TextXAlignment = Enum.TextXAlignment.Left
+    serverHeaderStatus.Parent = serversTab
+
+    local refreshServersBtn = createContentButton(serversTab, "🔄 Refresh", UDim2.fromOffset(90, 26), UDim2.new(1, -90, 0, 3), Color3.fromRGB(35, 75, 130))
+
+    local serverListFrame = Instance.new("ScrollingFrame")
+    serverListFrame.Size = UDim2.new(1, 0, 1, -40)
+    serverListFrame.Position = UDim2.fromOffset(0, 36)
+    serverListFrame.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+    serverListFrame.BorderSizePixel = 0
+    serverListFrame.ScrollBarThickness = 4
+    serverListFrame.CanvasSize = UDim2.new()
+    serverListFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    serverListFrame.Parent = serversTab
+    Instance.new("UICorner", serverListFrame).CornerRadius = UDim.new(0, 6)
+
+    local serverListLayout = Instance.new("UIListLayout", serverListFrame)
+    serverListLayout.Padding = UDim.new(0, 6)
+
+    local friendIds = {}
+    local function cacheFriends()
+        friendIds = {}
+        pcall(function()
+            local pages = Players:GetFriendsAsync(LocalPlayer.UserId)
+            while true do
+                for _, item in ipairs(pages:GetCurrentPage()) do
+                    friendIds[item.Id] = true
+                end
+                if pages.IsFinished then break end
+                pages:AdvanceToNextPageAsync()
             end
         end)
-    end))
-
-    table.insert(playerConnections, targetPlayer.CharacterRemoving:Connect(function()
-        removePlayerESP(targetPlayer)
-    end))
-
-    if targetPlayer.Character and ESPEnabled then
-        createPlayerESP(targetPlayer)
     end
-end
+    task.spawn(cacheFriends)
 
-local function removeESPPlayerConnections(targetPlayer)
-    removePlayerESP(targetPlayer)
-    local list = ESPPlayerConnections[targetPlayer]
-    if list then
-        for _, connection in ipairs(list) do
-            pcall(function() connection:Disconnect() end)
+    local function fetchServers()
+        for _, child in ipairs(serverListFrame:GetChildren()) do
+            if child:IsA("Frame") then child:Destroy() end
         end
-        ESPPlayerConnections[targetPlayer] = nil
+
+        serverHeaderStatus.Text = "Fetching servers..."
+
+        task.spawn(function()
+            local totalFriendsInServers = 0
+            local placeId = game.PlaceId
+            local url = "https://games.roblox.com/v1/games/" .. tostring(placeId) .. "/servers/Public?limit=50&sortOrder=Desc"
+            
+            local res = httpRequest({Url = url, Method = "GET"})
+            local bodyData = nil
+
+            if res and res.Body then
+                pcall(function() bodyData = HttpService:JSONDecode(res.Body) end)
+            end
+
+            if not bodyData or not bodyData.data then
+                serverHeaderStatus.Text = "Failed to load servers."
+                return
+            end
+
+            local servers = bodyData.data
+            serverHeaderStatus.Text = "Found " .. tostring(#servers) .. " Servers"
+
+            for idx, serverData in ipairs(servers) do
+                local serverFrame = Instance.new("Frame")
+                serverFrame.Size = UDim2.new(1, -6, 0, 42)
+                serverFrame.BackgroundColor3 = Color3.fromRGB(24, 29, 42)
+                serverFrame.BorderSizePixel = 0
+                serverFrame.Parent = serverListFrame
+
+                Instance.new("UICorner", serverFrame).CornerRadius = UDim.new(0, 6)
+                local sfStroke = Instance.new("UIStroke", serverFrame)
+                sfStroke.Color = Color3.fromRGB(40, 50, 70)
+                sfStroke.Thickness = 1
+
+                local friendsInThisServer = 0
+                if serverData.players then
+                    for _, pData in ipairs(serverData.players) do
+                        if pData.id and friendIds[pData.id] then
+                            friendsInThisServer = friendsInThisServer + 1
+                        end
+                    end
+                end
+
+                totalFriendsInServers = totalFriendsInServers + friendsInThisServer
+
+                local infoLabel = Instance.new("TextLabel")
+                infoLabel.Size = UDim2.new(1, -120, 1, 0)
+                infoLabel.Position = UDim2.fromOffset(10, 0)
+                infoLabel.BackgroundTransparency = 1
+                infoLabel.Text = "Server #" .. tostring(idx) .. "  |  👤 " .. tostring(serverData.playing) .. "/" .. tostring(serverData.maxPlayers) .. "  |  ⚡ " .. tostring(serverData.ping or "N/A") .. "ms"
+                infoLabel.TextColor3 = Color3.fromRGB(220, 230, 245)
+                infoLabel.Font = Enum.Font.GothamSemibold
+                infoLabel.TextSize = 11
+                infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+                infoLabel.Parent = serverFrame
+
+                if friendsInThisServer > 0 then
+                    local sBadgeFrame = Instance.new("Frame")
+                    sBadgeFrame.Size = UDim2.fromOffset(20, 20)
+                    sBadgeFrame.Position = UDim2.new(1, -135, 0.5, -10)
+                    sBadgeFrame.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
+                    sBadgeFrame.BorderSizePixel = 0
+                    sBadgeFrame.Parent = serverFrame
+
+                    Instance.new("UICorner", sBadgeFrame).CornerRadius = UDim.new(1, 0)
+                    local sBadgeStroke = Instance.new("UIStroke", sBadgeFrame)
+                    sBadgeStroke.Color = Color3.fromRGB(255, 255, 255)
+                    sBadgeStroke.Thickness = 1.5
+
+                    local sBadgeLbl = Instance.new("TextLabel")
+                    sBadgeLbl.Size = UDim2.fromScale(1, 1)
+                    sBadgeLbl.BackgroundTransparency = 1
+                    sBadgeLbl.Text = tostring(friendsInThisServer)
+                    sBadgeLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    sBadgeLbl.Font = Enum.Font.GothamBold
+                    sBadgeLbl.TextSize = 10
+                    sBadgeLbl.Parent = sBadgeFrame
+                end
+
+                local joinBtn = Instance.new("TextButton")
+                joinBtn.Size = UDim2.fromOffset(80, 26)
+                joinBtn.Position = UDim2.new(1, -90, 0.5, -13)
+                joinBtn.BackgroundColor3 = (serverData.id == game.JobId) and Color3.fromRGB(40, 50, 65) or Color3.fromRGB(0, 150, 90)
+                joinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                joinBtn.Text = (serverData.id == game.JobId) and "Current" or "Join"
+                joinBtn.Font = Enum.Font.GothamBold
+                joinBtn.TextSize = 11
+                joinBtn.BorderSizePixel = 0
+                joinBtn.AutoButtonColor = false
+                joinBtn.Parent = serverFrame
+
+                Instance.new("UICorner", joinBtn).CornerRadius = UDim.new(0, 5)
+
+                if serverData.id ~= game.JobId then
+                    joinBtn.MouseButton1Click:Connect(function()
+                        joinBtn.Text = "Joining..."
+                        TeleportService:TeleportToPlaceInstance(placeId, serverData.id, LocalPlayer)
+                    end)
+                end
+            end
+
+            if totalFriendsInServers > 0 then
+                serverBadgeText.Text = tostring(totalFriendsInServers)
+                serverBadgeFrame.Visible = true
+            else
+                serverBadgeFrame.Visible = false
+            end
+        end)
     end
+
+    refreshServersBtn.MouseButton1Click:Connect(fetchServers)
+    task.spawn(fetchServers)
 end
-
-
--- GUI CREATION
 
 --========================================================
-
-local gui = Instance.new("ScreenGui")
-
-gui.Name = "AestheticStudioV3"
-
-gui.ResetOnSpawn = false
-
-gui.IgnoreGuiInset = true
-
-gui.DisplayOrder = 999
-
-gui.Parent = playerGui
-
-local main = Instance.new("Frame")
-
-main.Name = "Main"
-
-main.Size = UDim2.fromOffset(390, 540)
-
-main.Position = UDim2.new(1, -410, 0.5, -270)
-
-main.BackgroundColor3 = Color3.fromRGB(22, 24, 32)
-
-main.BorderSizePixel = 0
-
-main.Parent = gui
-
-local mainCorner = Instance.new("UICorner")
-
-mainCorner.CornerRadius = UDim.new(0, 12)
-
-mainCorner.Parent = main
-
-local stroke = Instance.new("UIStroke")
-
-stroke.Color = Color3.fromRGB(80, 85, 110)
-
-stroke.Thickness = 1
-
-stroke.Parent = main
-
-local function makeLabel(parent, text, size, position, textSize)
-
-    local label = Instance.new("TextLabel")
-
-    label.BackgroundTransparency = 1
-
-    label.Text = text
-
-    label.Size = size
-
-    label.Position = position
-
-    label.Font = Enum.Font.GothamSemibold
-
-    label.TextSize = textSize or 13
-
-    label.TextColor3 = Color3.fromRGB(240, 240, 250)
-
-    label.TextXAlignment = Enum.TextXAlignment.Left
-
-    label.Parent = parent
-
-    return label
-
-end
-
-local function makeButton(parent, text, size, position, color)
-
-    local button = Instance.new("TextButton")
-
-    button.Size = size
-
-    button.Position = position
-
-    button.BackgroundColor3 = color or Color3.fromRGB(42, 45, 58)
-
-    button.BorderSizePixel = 0
-
-    button.Text = text
-
-    button.TextColor3 = Color3.fromRGB(240, 240, 250)
-
-    button.Font = Enum.Font.GothamSemibold
-
-    button.TextSize = 12
-
-    button.AutoButtonColor = true
-
-    button.Parent = parent
-
-    local corner = Instance.new("UICorner")
-
-    corner.CornerRadius = UDim.new(0, 6)
-
-    corner.Parent = button
-
-    return button
-
-end
-
--- Header
-
-local header = Instance.new("Frame")
-
-header.Size = UDim2.new(1, 0, 0, 42)
-
-header.BackgroundColor3 = Color3.fromRGB(31, 34, 45)
-
-header.BorderSizePixel = 0
-
-header.Parent = main
-
-local headerCorner = Instance.new("UICorner")
-
-headerCorner.CornerRadius = UDim.new(0, 12)
-
-headerCorner.Parent = header
-
-makeLabel(
-
-    header,
-
-    "✦  UNIVERSAL STUDIO",
-
-    UDim2.new(1, -125, 1, 0),
-
-    UDim2.fromOffset(13, 0),
-
-    14
-
-)
-
-local minimizeButton = makeButton(
-
-    header, "—", UDim2.fromOffset(30, 27),
-
-    UDim2.new(1, -75, 0, 7)
-
-)
-
-local closeButton = makeButton(
-
-    header, "×", UDim2.fromOffset(30, 27),
-
-    UDim2.new(1, -38, 0, 7),
-
-    Color3.fromRGB(125, 50, 60)
-
-)
-
--- Dragging
-
-local dragging = false
-
-local dragStart
-
-local startPosition
-
-connect(header.InputBegan, function(input)
-
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-
-        or input.UserInputType == Enum.UserInputType.Touch then
-
-        dragging = true
-
-        dragStart = input.Position
-
-        startPosition = main.Position
-
+-- MODULE 2.8: ADVANCED PLAYER SEARCH TAB & DETAIL INSPECTOR
+--========================================================
+do
+    local searchInput = Instance.new("TextBox")
+    searchInput.Size = UDim2.new(1, -95, 0, 32)
+    searchInput.Position = UDim2.fromOffset(0, 4)
+    searchInput.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
+    searchInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+    searchInput.PlaceholderText = "Search by Username or Display Name..."
+    searchInput.Text = ""
+    searchInput.Font = Enum.Font.Gotham
+    searchInput.TextSize = 12
+    searchInput.BorderSizePixel = 0
+    searchInput.Parent = searchTab
+    Instance.new("UICorner", searchInput).CornerRadius = UDim.new(0, 6)
+
+    local searchSubmitBtn = createContentButton(searchTab, "🔍 Search", UDim2.fromOffset(90, 32), UDim2.new(1, -90, 0, 4), Color3.fromRGB(0, 140, 200))
+
+    local resultsContainer = Instance.new("Frame")
+    resultsContainer.Size = UDim2.new(1, 0, 1, -42)
+    resultsContainer.Position = UDim2.fromOffset(0, 42)
+    resultsContainer.BackgroundTransparency = 1
+    resultsContainer.Parent = searchTab
+
+    local function createScrollingFrame(parent)
+        local sf = Instance.new("ScrollingFrame")
+        sf.Size = UDim2.new(1, 0, 1, 0)
+        sf.BackgroundTransparency = 1
+        sf.BorderSizePixel = 0
+        sf.ScrollBarThickness = 4
+        sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        sf.CanvasSize = UDim2.new()
+        sf.Parent = parent
+        Instance.new("UIListLayout", sf).Padding = UDim.new(0, 6)
+        return sf
     end
 
-end)
+    local searchScroll = createScrollingFrame(resultsContainer)
 
-connect(UserInputService.InputChanged, function(input)
+    local function showPlayerDetails(targetUserId)
+        searchScroll:ClearAllChildren()
+        Instance.new("UIListLayout", searchScroll).Padding = UDim.new(0, 6)
 
-    if dragging and (
+        local loadingLabel = Instance.new("TextLabel")
+        loadingLabel.Size = UDim2.new(1, -6, 0, 40)
+        loadingLabel.BackgroundTransparency = 1
+        loadingLabel.Text = "⚡ Loading Full Player Profile & Robux Value..."
+        loadingLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
+        loadingLabel.Font = Enum.Font.GothamBold
+        loadingLabel.TextSize = 12
+        loadingLabel.Parent = searchScroll
 
-        input.UserInputType == Enum.UserInputType.MouseMovement
+        task.spawn(function()
+            local targetPlayerObj = Players:GetPlayerByUserId(targetUserId)
+            local isTargetInServer = targetPlayerObj ~= nil
 
-        or input.UserInputType == Enum.UserInputType.Touch
+            -- 1. User Info & Bio
+            local userUrl = "https://users.roblox.com/v1/users/" .. tostring(targetUserId)
+            local userRes = httpRequest({Url = userUrl, Method = "GET"})
+            local userData = userRes and HttpService:JSONDecode(userRes.Body) or {}
 
-    ) then
+            -- 2. Online Status via Presence API
+            local onlineStatusText = "⚪ Offline"
+            local presenceUrl = "https://presence.roblox.com/v1/presence/users"
+            local presenceRes = httpRequest({
+                Url = presenceUrl,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({ userIds = { targetUserId } })
+            })
+            if presenceRes and presenceRes.Body then
+                local pData = HttpService:JSONDecode(presenceRes.Body)
+                if pData and pData.userPresences and pData.userPresences[1] then
+                    local typeVal = pData.userPresences[1].userPresenceType
+                    if typeVal == 1 then
+                        onlineStatusText = "🟢 Online (Website)"
+                    elseif typeVal == 2 then
+                        onlineStatusText = "🟢 In Game"
+                    elseif typeVal == 3 then
+                        onlineStatusText = "🟢 In Studio"
+                    end
+                end
+            end
 
-        local delta = input.Position - dragStart
+            -- 3. Currently Wearing & Correct Robux Value via Catalog Items Details POST API
+            local wearUrl = "https://avatar.roblox.com/v1/users/" .. tostring(targetUserId) .. "/currently-wearing"
+            local wearRes = httpRequest({Url = wearUrl, Method = "GET"})
+            local wearData = wearRes and HttpService:JSONDecode(wearRes.Body) or { assetIds = {} }
+            local assetIds = wearData.assetIds or {}
 
-        main.Position = UDim2.new(
+            local totalRobux = 0
+            local itemNames = {}
+            if #assetIds > 0 then
+                local catalogUrl = "https://catalog.roblox.com/v1/catalog/items/details"
+                local itemsPayload = { items = {} }
+                for _, id in ipairs(assetIds) do
+                    table.insert(itemsPayload.items, { itemType = "Asset", id = id })
+                end
 
-            startPosition.X.Scale,
+                local catalogRes = httpRequest({
+                    Url = catalogUrl,
+                    Method = "POST",
+                    Headers = { ["Content-Type"] = "application/json" },
+                    Body = HttpService:JSONEncode(itemsPayload)
+                })
 
-            startPosition.X.Offset + delta.X,
+                if catalogRes and catalogRes.Body then
+                    local catalogJson = HttpService:JSONDecode(catalogRes.Body)
+                    if catalogJson and catalogJson.data then
+                        for _, item in ipairs(catalogJson.data) do
+                            local price = item.price or (item.lowestPrice and item.lowestPrice) or 0
+                            totalRobux = totalRobux + price
+                            table.insert(itemNames, (item.name or "Asset") .. " (" .. tostring(price) .. " R$)")
+                        end
+                    end
+                end
+            end
 
-            startPosition.Y.Scale,
+            -- 4. Friends Count & Mutual Friends
+            local friendsCount = 0
+            local fCountUrl = "https://friends.roblox.com/v1/users/" .. tostring(targetUserId) .. "/friends/count"
+            local fCountRes = httpRequest({Url = fCountUrl, Method = "GET"})
+            if fCountRes then
+                local fCountData = HttpService:JSONDecode(fCountRes.Body)
+                friendsCount = fCountData and fCountData.count or 0
+            end
 
-            startPosition.Y.Offset + delta.Y
+            local mutualFriends = {}
+            pcall(function()
+                local targetFriendsPages = Players:GetFriendsAsync(targetUserId)
+                local localFriendsPages = Players:GetFriendsAsync(LocalPlayer.UserId)
+                local localFriendSet = {}
+                while true do
+                    for _, f in ipairs(localFriendsPages:GetCurrentPage()) do localFriendSet[f.Id] = f.DisplayName end
+                    if localFriendsPages.IsFinished then break end
+                    localFriendsPages:AdvanceToNextPageAsync()
+                end
+                while true do
+                    for _, f in ipairs(targetFriendsPages:GetCurrentPage()) do
+                        if localFriendSet[f.Id] then
+                            table.insert(mutualFriends, f.DisplayName .. " (@" .. f.Username .. ")")
+                        end
+                    end
+                    if targetFriendsPages.IsFinished then break end
+                    targetFriendsPages:AdvanceToNextPageAsync()
+                end
+            end)
 
-        )
+            searchScroll:ClearAllChildren()
+            Instance.new("UIListLayout", searchScroll).Padding = UDim.new(0, 6)
 
+            -- Header Profile Card
+            local profileCard = Instance.new("Frame")
+            profileCard.Size = UDim2.new(1, -6, 0, 110)
+            profileCard.BackgroundColor3 = Color3.fromRGB(20, 25, 38)
+            profileCard.Parent = searchScroll
+            Instance.new("UICorner", profileCard).CornerRadius = UDim.new(0, 8)
+            local pcStroke = Instance.new("UIStroke", profileCard)
+            pcStroke.Color = Color3.fromRGB(0, 180, 255)
+            pcStroke.Thickness = 1.2
+
+            local avatarImg = Instance.new("ImageLabel")
+            avatarImg.Size = UDim2.fromOffset(80, 80)
+            avatarImg.Position = UDim2.fromOffset(8, 15)
+            avatarImg.BackgroundColor3 = Color3.fromRGB(12, 15, 22)
+            avatarImg.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(targetUserId) .. "&w=150&h=150"
+            avatarImg.Parent = profileCard
+            Instance.new("UICorner", avatarImg).CornerRadius = UDim.new(0, 6)
+
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.Size = UDim2.new(1, -95, 0, 18)
+            nameLabel.Position = UDim2.fromOffset(95, 6)
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.Text = (userData.displayName or "User") .. " (@" .. (userData.name or "Name") .. ")"
+            nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+            nameLabel.Font = Enum.Font.GothamBold
+            nameLabel.TextSize = 12
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.Parent = profileCard
+
+            local statusLabel = Instance.new("TextLabel")
+            statusLabel.Size = UDim2.new(1, -95, 0, 16)
+            statusLabel.Position = UDim2.fromOffset(95, 24)
+            statusLabel.BackgroundTransparency = 1
+            statusLabel.Text = "Status: " .. onlineStatusText
+            statusLabel.TextColor3 = Color3.fromRGB(0, 230, 255)
+            statusLabel.Font = Enum.Font.GothamSemibold
+            statusLabel.TextSize = 10
+            statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+            statusLabel.Parent = profileCard
+
+            local robuxLabel = Instance.new("TextLabel")
+            robuxLabel.Size = UDim2.new(1, -95, 0, 16)
+            robuxLabel.Position = UDim2.fromOffset(95, 42)
+            robuxLabel.BackgroundTransparency = 1
+            robuxLabel.Text = "💎 Outfit Value: " .. tostring(totalRobux) .. " Robux"
+            robuxLabel.TextColor3 = Color3.fromRGB(0, 230, 140)
+            robuxLabel.Font = Enum.Font.GothamBold
+            robuxLabel.TextSize = 10
+            robuxLabel.TextXAlignment = Enum.TextXAlignment.Left
+            robuxLabel.Parent = profileCard
+
+            local friendStatsLbl = Instance.new("TextLabel")
+            friendStatsLbl.Size = UDim2.new(1, -95, 0, 16)
+            friendStatsLbl.Position = UDim2.fromOffset(95, 60)
+            friendStatsLbl.BackgroundTransparency = 1
+            friendStatsLbl.Text = "👥 Friends: " .. tostring(friendsCount) .. " | ⭐ Mutual: " .. tostring(#mutualFriends)
+            friendStatsLbl.TextColor3 = Color3.fromRGB(200, 220, 255)
+            friendStatsLbl.Font = Enum.Font.GothamSemibold
+            friendStatsLbl.TextSize = 10
+            friendStatsLbl.TextXAlignment = Enum.TextXAlignment.Left
+            friendStatsLbl.Parent = profileCard
+
+            local joinMapBtn = Instance.new("TextButton")
+            joinMapBtn.Size = UDim2.new(1, -100, 0, 24)
+            joinMapBtn.Position = UDim2.fromOffset(95, 79)
+            joinMapBtn.BackgroundColor3 = isTargetInServer and Color3.fromRGB(0, 140, 200) or Color3.fromRGB(35, 75, 130)
+            joinMapBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            joinMapBtn.Text = isTargetInServer and "🟢 Teleport to Player in Server" or "🚀 Join Player Map Server"
+            joinMapBtn.Font = Enum.Font.GothamBold
+            joinMapBtn.TextSize = 10
+            joinMapBtn.BorderSizePixel = 0
+            joinMapBtn.Parent = profileCard
+            Instance.new("UICorner", joinMapBtn).CornerRadius = UDim.new(0, 4)
+
+            joinMapBtn.MouseButton1Click:Connect(function()
+                if isTargetInServer and targetPlayerObj.Character then
+                    local tRoot = targetPlayerObj.Character:FindFirstChild("HumanoidRootPart")
+                    local lRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    if tRoot and lRoot then lRoot.CFrame = tRoot.CFrame * CFrame.new(0, 0, 3) end
+                else
+                    joinMapBtn.Text = "Attempting Join..."
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+                end
+            end)
+
+            -- Bio / Description Box
+            local bioBox = Instance.new("TextLabel")
+            bioBox.Size = UDim2.new(1, -6, 0, 60)
+            bioBox.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+            bioBox.Text = "📝 Description: " .. (userData.description ~= "" and userData.description or "No description provided.")
+            bioBox.TextColor3 = Color3.fromRGB(180, 190, 210)
+            bioBox.Font = Enum.Font.Gotham
+            bioBox.TextSize = 10
+            bioBox.TextWrapped = true
+            bioBox.TextYAlignment = Enum.TextYAlignment.Top
+            bioBox.TextXAlignment = Enum.TextXAlignment.Left
+            bioBox.Parent = searchScroll
+            Instance.new("UICorner", bioBox).CornerRadius = UDim.new(0, 6)
+            local bioPad = Instance.new("UIPadding", bioBox)
+            bioPad.PaddingTop = UDim.new(0, 6) bioPad.PaddingLeft = UDim.new(0, 6) bioPad.PaddingRight = UDim.new(0, 6)
+
+            -- Wearing List
+            local wearHeader = Instance.new("TextLabel")
+            wearHeader.Size = UDim2.new(1, 0, 0, 18)
+            wearHeader.BackgroundTransparency = 1
+            wearHeader.Text = "👕 Currently Wearing Items (" .. tostring(#itemNames) .. "):"
+            wearHeader.TextColor3 = Color3.fromRGB(0, 200, 255)
+            wearHeader.Font = Enum.Font.GothamBold
+            wearHeader.TextSize = 11
+            wearHeader.TextXAlignment = Enum.TextXAlignment.Left
+            wearHeader.Parent = searchScroll
+
+            for _, itemName in ipairs(itemNames) do
+                local itemLbl = Instance.new("TextLabel")
+                itemLbl.Size = UDim2.new(1, -6, 0, 20)
+                itemLbl.BackgroundColor3 = Color3.fromRGB(24, 28, 40)
+                itemLbl.Text = " • " .. itemName
+                itemLbl.TextColor3 = Color3.fromRGB(220, 230, 245)
+                itemLbl.Font = Enum.Font.Gotham
+                itemLbl.TextSize = 10
+                itemLbl.TextXAlignment = Enum.TextXAlignment.Left
+                itemLbl.Parent = searchScroll
+                Instance.new("UICorner", itemLbl).CornerRadius = UDim.new(0, 4)
+            end
+        end)
     end
 
-end)
+    local function executeSearch()
+        local query = searchInput.Text:lower():gsub("%s+", "")
+        if query == "" then return end
 
-connect(UserInputService.InputEnded, function(input)
+        searchScroll:ClearAllChildren()
+        Instance.new("UIListLayout", searchScroll).Padding = UDim.new(0, 6)
 
-    if input.UserInputType == Enum.UserInputType.MouseButton1
+        local status = Instance.new("TextLabel")
+        status.Size = UDim2.new(1, -6, 0, 30)
+        status.BackgroundTransparency = 1
+        status.Text = "Searching for '" .. query .. "'..."
+        status.TextColor3 = Color3.fromRGB(0, 200, 255)
+        status.Font = Enum.Font.GothamBold
+        status.TextSize = 11
+        status.Parent = searchScroll
 
-        or input.UserInputType == Enum.UserInputType.Touch then
+        task.spawn(function()
+            local targetUserId = nil
+            local idSuccess, idResult = pcall(function() return Players:GetUserIdFromNameAsync(searchInput.Text) end)
+            if idSuccess and idResult then
+                targetUserId = idResult
+            end
 
-        dragging = false
+            local results = {}
+            if targetUserId then
+                local userUrl = "https://users.roblox.com/v1/users/" .. tostring(targetUserId)
+                local res = httpRequest({Url = userUrl, Method = "GET"})
+                if res and res.Body then
+                    local data = HttpService:JSONDecode(res.Body)
+                    if data and data.id then
+                        table.insert(results, { id = data.id, name = data.name, displayName = data.displayName })
+                    end
+                end
+            end
 
+            if #results == 0 then
+                local searchUrl = "https://users.roblox.com/v1/users/search?keyword=" .. query .. "&limit=10"
+                local res = httpRequest({Url = searchUrl, Method = "GET"})
+                local searchData = res and HttpService:JSONDecode(res.Body) or { data = {} }
+                results = searchData.data or {}
+            end
+
+            searchScroll:ClearAllChildren()
+            Instance.new("UIListLayout", searchScroll).Padding = UDim.new(0, 6)
+
+            if #results == 0 then
+                status.Text = "No players found matching '" .. query .. "'."
+                status.Parent = searchScroll
+                return
+            end
+
+            if #results == 1 then
+                showPlayerDetails(results[1].id)
+                return
+            end
+
+            for _, pData in ipairs(results) do
+                local card = Instance.new("Frame")
+                card.Size = UDim2.new(1, -6, 0, 48)
+                card.BackgroundColor3 = Color3.fromRGB(24, 29, 42)
+                card.Parent = searchScroll
+                Instance.new("UICorner", card).CornerRadius = UDim.new(0, 6)
+
+                local headshot = Instance.new("ImageLabel")
+                headshot.Size = UDim2.fromOffset(38, 38)
+                headshot.Position = UDim2.fromOffset(5, 5)
+                headshot.BackgroundColor3 = Color3.fromRGB(15, 18, 26)
+                headshot.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(pData.id) .. "&w=150&h=150"
+                headshot.Parent = card
+                Instance.new("UICorner", headshot).CornerRadius = UDim.new(1, 0)
+
+                local title = Instance.new("TextLabel")
+                title.Size = UDim2.new(1, -140, 1, 0)
+                title.Position = UDim2.fromOffset(50, 0)
+                title.BackgroundTransparency = 1
+                title.Text = pData.displayName .. "\n@" .. pData.name
+                title.TextColor3 = Color3.fromRGB(240, 245, 255)
+                title.Font = Enum.Font.GothamSemibold
+                title.TextSize = 10
+                title.TextXAlignment = Enum.TextXAlignment.Left
+                title.Parent = card
+
+                local inspectBtn = createContentButton(card, "Inspect Profile", UDim2.fromOffset(80, 26), UDim2.new(1, -85, 0.5, -13), Color3.fromRGB(0, 120, 200))
+                inspectBtn.MouseButton1Click:Connect(function()
+                    showPlayerDetails(pData.id)
+                end)
+            end
+        end)
     end
 
-end)
-
--- Main content
-
-local content = Instance.new("Frame")
-
-content.BackgroundTransparency = 1
-
-content.Position = UDim2.fromOffset(10, 88)
-content.Size = UDim2.new(1, -20, 1, -98)
-
-
-content.Parent = main
-
--- Shared module tabs
-local moduleTabBar = Instance.new("Frame")
-moduleTabBar.Name = "ModuleTabs"
-moduleTabBar.BackgroundTransparency = 1
-moduleTabBar.Position = UDim2.fromOffset(10, 48)
-moduleTabBar.Size = UDim2.new(1, -20, 0, 32)
-moduleTabBar.Parent = main
-
-local aestheticModuleTab = makeButton(
-    moduleTabBar, "AESTHETIC", UDim2.new(0.5, -4, 1, 0),
-    UDim2.fromOffset(0, 0), Color3.fromRGB(70, 85, 125)
-)
-
-local playerModuleTab = makeButton(
-    moduleTabBar, "PLAYER ESP", UDim2.new(0.5, -4, 1, 0),
-    UDim2.new(0.5, 4, 0, 0)
-)
-
-local playerPage = Instance.new("Frame")
-playerPage.Name = "PlayerESPPage"
-playerPage.Position = content.Position
-playerPage.Size = content.Size
-playerPage.BackgroundTransparency = 1
-playerPage.Visible = false
-playerPage.Parent = main
-
-local activeModule = "Aesthetic"
-local function selectModule(moduleName)
-    activeModule = moduleName
-    local showAesthetic = moduleName == "Aesthetic"
-    content.Visible = showAesthetic
-    playerPage.Visible = not showAesthetic
-
-    aestheticModuleTab.BackgroundColor3 = showAesthetic
-        and Color3.fromRGB(70, 85, 125)
-        or Color3.fromRGB(42, 45, 58)
-
-    playerModuleTab.BackgroundColor3 = not showAesthetic
-        and Color3.fromRGB(70, 85, 125)
-        or Color3.fromRGB(42, 45, 58)
+    searchSubmitBtn.MouseButton1Click:Connect(executeSearch)
+    searchInput.FocusLost:Connect(function(enterPressed) if enterPressed then executeSearch() end end)
 end
 
-connect(aestheticModuleTab.MouseButton1Click, function()
-    selectModule("Aesthetic")
-end)
-
-connect(playerModuleTab.MouseButton1Click, function()
-    selectModule("PlayerESP")
-end)
-
--- Player ESP page
-makeLabel(
-    playerPage, "PLAYER ESP", UDim2.new(1, 0, 0, 24),
-    UDim2.fromOffset(2, 5), 14
-)
-
-local espDescription = makeLabel(
-    playerPage,
-    "Highlight other players and show their display names.",
-    UDim2.new(1, 0, 0, 32),
-    UDim2.fromOffset(2, 31), 11
-)
-espDescription.TextColor3 = Color3.fromRGB(165, 170, 190)
-
-espToggleButton = makeButton(
-    playerPage,
-    "PLAYER ESP: ON",
-    UDim2.new(1, 0, 0, 34),
-    UDim2.fromOffset(0, 75),
-    Color3.fromRGB(55, 85, 65)
-)
-
-local espSizeLabel = makeLabel(
-    playerPage,
-    "DISPLAY NAME SIZE: " .. tostring(DISPLAY_NAME_SIZE),
-    UDim2.new(1, 0, 0, 22),
-    UDim2.fromOffset(2, 119), 11
-)
-
-local espSizeHint = makeLabel(
-    playerPage,
-    "Fixed font size; does not scale with distance.",
-    UDim2.new(1, 0, 0, 22),
-    UDim2.fromOffset(2, 142), 10
-)
-espSizeHint.TextColor3 = Color3.fromRGB(155, 160, 180)
-
-local espColorHint = makeLabel(
-    playerPage,
-    "Highlight: red  |  Outline: white  |  Hotkey: R",
-    UDim2.new(1, 0, 0, 22),
-    UDim2.fromOffset(2, 174), 10
-)
-espColorHint.TextColor3 = Color3.fromRGB(155, 160, 180)
-
-connect(espToggleButton.MouseButton1Click, togglePlayerESP)
-
-
--- Tabs
-
-local allTab = makeButton(
-
-    content, "ALL FILTERS", UDim2.fromOffset(115, 30),
-
-    UDim2.fromOffset(0, 0),
-
-    Color3.fromRGB(70, 85, 125)
-
-)
-
-local favouriteTab = makeButton(
-
-    content, "★ FAVOURITES", UDim2.fromOffset(125, 30),
-
-    UDim2.fromOffset(122, 0)
-
-)
-
-local resetButton = makeButton(
-
-    content, "RESET", UDim2.fromOffset(110, 30),
-
-    UDim2.new(1, -110, 0, 0),
-
-    Color3.fromRGB(100, 65, 65)
-
-)
-
--- Search
-
-local searchBox = Instance.new("TextBox")
-
-searchBox.Size = UDim2.new(1, 0, 0, 32)
-
-searchBox.Position = UDim2.fromOffset(0, 38)
-
-searchBox.BackgroundColor3 = Color3.fromRGB(34, 37, 49)
-
-searchBox.BorderSizePixel = 0
-
-searchBox.PlaceholderText = "Search filters..."
-
-searchBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 165)
-
-searchBox.Text = ""
-
-searchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-
-searchBox.Font = Enum.Font.Gotham
-
-searchBox.TextSize = 12
-
-searchBox.ClearTextOnFocus = false
-
-searchBox.Parent = content
-
-local searchCorner = Instance.new("UICorner")
-
-searchCorner.CornerRadius = UDim.new(0, 6)
-
-searchCorner.Parent = searchBox
-
--- Category selector
-
-local categoryScroll = Instance.new("ScrollingFrame")
-
-categoryScroll.Size = UDim2.new(1, 0, 0, 34)
-
-categoryScroll.Position = UDim2.fromOffset(0, 78)
-
-categoryScroll.BackgroundTransparency = 1
-
-categoryScroll.BorderSizePixel = 0
-
-categoryScroll.ScrollBarThickness = 2
-
-categoryScroll.ScrollingDirection = Enum.ScrollingDirection.X
-
-categoryScroll.AutomaticCanvasSize = Enum.AutomaticSize.X
-
-categoryScroll.CanvasSize = UDim2.new()
-
-categoryScroll.Parent = content
-
-local categoryLayout = Instance.new("UIListLayout")
-
-categoryLayout.FillDirection = Enum.FillDirection.Horizontal
-
-categoryLayout.Padding = UDim.new(0, 5)
-
-categoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
-
-categoryLayout.Parent = categoryScroll
-
-local categoryButtons = {}
-
-local function createCategoryButton(name)
-
-    local button = makeButton(
-
-        categoryScroll,
-
-        name,
-
-        UDim2.fromOffset(math.max(55, #name \* 8 + 20), 27),
-
-        UDim2.new(),
-
-        Color3.fromRGB(42, 45, 58)
-
+--========================================================
+-- MODULE 3: 30 ADVANCED NEXT-GEN RTX SHADER STUDIO
+--========================================================
+do
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, 0, 1, -10)
+    scroll.Position = UDim2.fromOffset(0, 5)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 4
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll.CanvasSize = UDim2.new()
+    scroll.Parent = filterTab
+    local layout = Instance.new("UIListLayout", scroll)
+    layout.Padding = UDim.new(0, 8)
+
+    local function addFilterOption(name, callback, customBg)
+        local btn = createContentButton(scroll, name, UDim2.new(1, -6, 0, 36), UDim2.new(), customBg or Color3.fromRGB(20, 24, 34))
+        btn.MouseButton1Click:Connect(callback)
+        return btn
+    end
+
+    local function clearAllFilters()
+        for _, obj in ipairs(Lighting:GetChildren()) do
+            if obj.Name:find("RTX") or obj.Name:find("Filter") then
+                obj:Destroy()
+            end
+        end
+    end
+
+    addFilterOption("⭐ 1. Cinematic RTX Ultra", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXColorCorrection"
+        cc.TintColor = Color3.fromRGB(220, 235, 255)
+        cc.Saturation = 0.5
+        cc.Contrast = 0.35
+        cc.Brightness = 0.08
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloom"
+        bloom.Intensity = 0.6
+        bloom.Size = 28
+        bloom.Threshold = 0.7
+
+        local rays = Instance.new("SunRaysEffect", Lighting)
+        rays.Name = "RTXSunRays"
+        rays.Intensity = 0.4
+        rays.Spread = 0.9
+
+        Lighting.GlobalShadows = true
+        Lighting.OutdoorAmbient = Color3.fromRGB(50, 60, 80)
+    end, Color3.fromRGB(25, 75, 120))
+
+    addFilterOption("🌆 2. Cyberpunk Neon RTX", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterCyber"
+        cc.TintColor = Color3.fromRGB(255, 160, 245)
+        cc.Saturation = 0.75
+        cc.Contrast = 0.5
+        cc.Brightness = 0.05
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomCyber"
+        bloom.Intensity = 1.1
+        bloom.Size = 38
+        bloom.Threshold = 0.4
+
+        local atmosphere = Instance.new("Atmosphere", Lighting)
+        atmosphere.Name = "RTXAtmosphereCyber"
+        atmosphere.Density = 0.35
+        atmosphere.Haze = 2.0
+        atmosphere.Color = Color3.fromRGB(80, 20, 100)
+    end)
+
+    addFilterOption("🌲 3. Realistic Path-Traced Daylight", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterDay"
+        cc.TintColor = Color3.fromRGB(245, 250, 255)
+        cc.Saturation = 0.3
+        cc.Contrast = 0.25
+        cc.Brightness = 0.1
+
+        local rays = Instance.new("SunRaysEffect", Lighting)
+        rays.Name = "RTXRaysDay"
+        rays.Intensity = 0.6
+        rays.Spread = 1.0
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomDay"
+        bloom.Intensity = 0.3
+        bloom.Size = 18
+        bloom.Threshold = 0.85
+
+        Lighting.GlobalShadows = true
+        Lighting.OutdoorAmbient = Color3.fromRGB(90, 110, 130)
+    end)
+
+    addFilterOption("🎬 4. Moody Cinematic Dark Film", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterMoody"
+        cc.TintColor = Color3.fromRGB(180, 205, 255)
+        cc.Saturation = -0.05
+        cc.Contrast = 0.55
+        cc.Brightness = -0.05
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomMoody"
+        bloom.Intensity = 0.4
+        bloom.Size = 22
+    end)
+
+    addFilterOption("☀️ 5. Ultra HDR Vivid RTX", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterHDR"
+        cc.TintColor = Color3.fromRGB(255, 255, 255)
+        cc.Saturation = 0.95
+        cc.Contrast = 0.4
+        cc.Brightness = 0.15
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomHDR"
+        bloom.Intensity = 0.5
+        bloom.Size = 24
+        bloom.Threshold = 0.7
+    end)
+
+    addFilterOption("📻 6. Retro Synthwave Glow", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterSynth"
+        cc.TintColor = Color3.fromRGB(255, 100, 230)
+        cc.Saturation = 0.8
+        cc.Contrast = 0.5
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomSynth"
+        bloom.Intensity = 1.25
+        bloom.Size = 45
+        bloom.Threshold = 0.35
+    end)
+
+    addFilterOption("🌌 7. Deep Space Midnight Engine", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterSpace"
+        cc.TintColor = Color3.fromRGB(100, 150, 255)
+        cc.Saturation = -0.2
+        cc.Contrast = 0.65
+        cc.Brightness = -0.12
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomSpace"
+        bloom.Intensity = 0.7
+        bloom.Size = 30
+    end)
+
+    addFilterOption("🌅 8. Golden Hour Photorealistic Sunset", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterSunset"
+        cc.TintColor = Color3.fromRGB(255, 190, 130)
+        cc.Saturation = 0.6
+        cc.Contrast = 0.35
+        cc.Brightness = 0.05
+
+        local rays = Instance.new("SunRaysEffect", Lighting)
+        rays.Name = "RTXRaysSunset"
+        rays.Intensity = 0.8
+        rays.Spread = 1.0
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomSunset"
+        bloom.Intensity = 0.6
+        bloom.Size = 32
+    end)
+
+    addFilterOption("🎞️ 9. Monochromatic Noir Film", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterNoir"
+        cc.Saturation = -1.0
+        cc.Contrast = 0.7
+        cc.Brightness = -0.05
+    end)
+
+    addFilterOption("🧟 10. Apocalypse Gloom Shader", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterApoc"
+        cc.TintColor = Color3.fromRGB(170, 200, 150)
+        cc.Saturation = -0.3
+        cc.Contrast = 0.45
+        cc.Brightness = -0.08
+
+        local atmosphere = Instance.new("Atmosphere", Lighting)
+        atmosphere.Name = "RTXAtmosphereApoc"
+        atmosphere.Density = 0.4
+        atmosphere.Haze = 3.0
+        atmosphere.Color = Color3.fromRGB(100, 120, 90)
+    end)
+
+    addFilterOption("💎 11. Hyper-Realistic RTX GI", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterGI"
+        cc.TintColor = Color3.fromRGB(235, 245, 255)
+        cc.Saturation = 0.45
+        cc.Contrast = 0.38
+        cc.Brightness = 0.08
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomGI"
+        bloom.Intensity = 0.55
+        bloom.Size = 25
+        bloom.Threshold = 0.65
+
+        local rays = Instance.new("SunRaysEffect", Lighting)
+        rays.Name = "RTXRaysGI"
+        rays.Intensity = 0.5
+        rays.Spread = 0.95
+
+        Lighting.GlobalShadows = true
+        Lighting.OutdoorAmbient = Color3.fromRGB(70, 85, 110)
+    end)
+
+    addFilterOption("❄️ 12. Arctic Frostbite Shaders", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterFrost"
+        cc.TintColor = Color3.fromRGB(180, 220, 255)
+        cc.Saturation = 0.25
+        cc.Contrast = 0.4
+        cc.Brightness = 0.05
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomFrost"
+        bloom.Intensity = 0.7
+        bloom.Size = 20
+    end)
+
+    addFilterOption("🌋 13. Volcanic Magma Inferno", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterMagma"
+        cc.TintColor = Color3.fromRGB(255, 150, 100)
+        cc.Saturation = 0.8
+        cc.Contrast = 0.5
+        cc.Brightness = 0.05
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomMagma"
+        bloom.Intensity = 1.0
+        bloom.Size = 35
+        bloom.Threshold = 0.4
+    end)
+
+    addFilterOption("🌿 14. Emerald Jungle Forest", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterJungle"
+        cc.TintColor = Color3.fromRGB(190, 245, 200)
+        cc.Saturation = 0.5
+        cc.Contrast = 0.3
+        cc.Brightness = 0.04
+
+        local rays = Instance.new("SunRaysEffect", Lighting)
+        rays.Name = "RTXRaysJungle"
+        rays.Intensity = 0.4
+        rays.Spread = 1.0
+    end)
+
+    addFilterOption("✨ 15. Ethereal Dreamscape", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterDream"
+        cc.TintColor = Color3.fromRGB(240, 210, 255)
+        cc.Saturation = 0.6
+        cc.Contrast = 0.2
+        cc.Brightness = 0.12
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomDream"
+        bloom.Intensity = 0.85
+        bloom.Size = 40
+        bloom.Threshold = 0.5
+    end)
+
+    addFilterOption("🌊 16. Deep Ocean Trench", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterOcean"
+        cc.TintColor = Color3.fromRGB(130, 200, 255)
+        cc.Saturation = 0.4
+        cc.Contrast = 0.45
+        cc.Brightness = -0.05
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomOcean"
+        bloom.Intensity = 0.5
+        bloom.Size = 25
+    end)
+
+    addFilterOption("🩸 17. Blood Moon Horror", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterBlood"
+        cc.TintColor = Color3.fromRGB(255, 120, 120)
+        cc.Saturation = 0.5
+        cc.Contrast = 0.6
+        cc.Brightness = -0.1
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomBlood"
+        bloom.Intensity = 0.9
+        bloom.Size = 35
+    end)
+
+    addFilterOption("📷 18. Vintage 1970s Film", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterVintage"
+        cc.TintColor = Color3.fromRGB(255, 235, 190)
+        cc.Saturation = 0.2
+        cc.Contrast = 0.3
+        cc.Brightness = 0.03
+    end)
+
+    addFilterOption("💻 19. Matrix Terminal Green", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterMatrix"
+        cc.TintColor = Color3.fromRGB(150, 255, 170)
+        cc.Saturation = 0.3
+        cc.Contrast = 0.5
+        cc.Brightness = -0.02
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomMatrix"
+        bloom.Intensity = 0.8
+        bloom.Size = 20
+    end)
+
+    addFilterOption("👑 20. Royal Gold Luxury", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterGold"
+        cc.TintColor = Color3.fromRGB(255, 230, 160)
+        cc.Saturation = 0.65
+        cc.Contrast = 0.4
+        cc.Brightness = 0.08
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomGold"
+        bloom.Intensity = 0.6
+        bloom.Size = 28
+    end)
+
+    addFilterOption("🔮 21. Twilight Amethyst", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterAmethyst"
+        cc.TintColor = Color3.fromRGB(210, 180, 255)
+        cc.Saturation = 0.6
+        cc.Contrast = 0.4
+        cc.Brightness = 0.04
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomAmethyst"
+        bloom.Intensity = 0.7
+        bloom.Size = 30
+    end)
+
+    addFilterOption("💎 22. Hyper-Clean Studio", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterStudio"
+        cc.TintColor = Color3.fromRGB(255, 255, 255)
+        cc.Saturation = 0.35
+        cc.Contrast = 0.3
+        cc.Brightness = 0.1
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomStudio"
+        bloom.Intensity = 0.3
+        bloom.Size = 15
+    end)
+
+    addFilterOption("🌌 23. Starlight Cosmic Galaxy", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterCosmic"
+        cc.TintColor = Color3.fromRGB(180, 160, 255)
+        cc.Saturation = 0.7
+        cc.Contrast = 0.5
+        cc.Brightness = -0.05
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomCosmic"
+        bloom.Intensity = 1.0
+        bloom.Size = 40
+    end)
+
+    addFilterOption("☀️ 24. Solar Flare Extreme", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterSolar"
+        cc.TintColor = Color3.fromRGB(255, 220, 150)
+        cc.Saturation = 0.8
+        cc.Contrast = 0.45
+        cc.Brightness = 0.15
+
+        local rays = Instance.new("SunRaysEffect", Lighting)
+        rays.Name = "RTXRaysSolar"
+        rays.Intensity = 0.95
+        rays.Spread = 1.0
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomSolar"
+        bloom.Intensity = 0.9
+        bloom.Size = 35
+    end)
+
+    addFilterOption("🌑 25. Midnight Shadow Ops", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterShadow"
+        cc.TintColor = Color3.fromRGB(150, 170, 210)
+        cc.Saturation = -0.25
+        cc.Contrast = 0.6
+        cc.Brightness = -0.12
+    end)
+
+    addFilterOption("🌧️ 26. Neon Tokyo Rain", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterTokyo"
+        cc.TintColor = Color3.fromRGB(200, 230, 255)
+        cc.Saturation = 0.7
+        cc.Contrast = 0.45
+        cc.Brightness = 0.02
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomTokyo"
+        bloom.Intensity = 0.85
+        bloom.Size = 32
+        bloom.Threshold = 0.5
+    end)
+
+    addFilterOption("🎨 27. Hyper-Vibrant Cartoon", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterCartoon"
+        cc.TintColor = Color3.fromRGB(255, 255, 255)
+        cc.Saturation = 1.2
+        cc.Contrast = 0.35
+        cc.Brightness = 0.08
+    end)
+
+    addFilterOption("⚙️ 28. Copper Steampunk", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterSteampunk"
+        cc.TintColor = Color3.fromRGB(255, 205, 160)
+        cc.Saturation = 0.4
+        cc.Contrast = 0.45
+        cc.Brightness = 0.03
+    end)
+
+    addFilterOption("🕯️ 29. Deep Abyss Underworld", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterAbyss"
+        cc.TintColor = Color3.fromRGB(255, 170, 110)
+        cc.Saturation = 0.1
+        cc.Contrast = 0.65
+        cc.Brightness = -0.15
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomAbyss"
+        bloom.Intensity = 0.75
+        bloom.Size = 30
+    end)
+
+    addFilterOption("🌟 30. Ultra-Definition Ray-Traced Master", function()
+        clearAllFilters()
+        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        cc.Name = "RTXFilterMaster"
+        cc.TintColor = Color3.fromRGB(230, 240, 255)
+        cc.Saturation = 0.55
+        cc.Contrast = 0.42
+        cc.Brightness = 0.08
+
+        local bloom = Instance.new("BloomEffect", Lighting)
+        bloom.Name = "RTXBloomMaster"
+        bloom.Intensity = 0.65
+        bloom.Size = 26
+        bloom.Threshold = 0.6
+
+        local rays = Instance.new("SunRaysEffect", Lighting)
+        rays.Name = "RTXRaysMaster"
+        rays.Intensity = 0.5
+        rays.Spread = 0.95
+
+        Lighting.GlobalShadows = true
+        Lighting.OutdoorAmbient = Color3.fromRGB(60, 75, 95)
+    end, Color3.fromRGB(0, 140, 90))
+
+    addFilterOption("🧹 Reset & Disable All Filters", function()
+        clearAllFilters()
+        Lighting.GlobalShadows = true
+    end, Color3.fromRGB(120, 35, 45))
+end
+
+--========================================================
+-- MODULE 3.5: SKY TIME STUDIO TAB (HOURLY SHIFTS & RESET)
+--========================================================
+do
+    local skyScroll = Instance.new("ScrollingFrame")
+    skyScroll.Size = UDim2.new(1, 0, 1, -10)
+    skyScroll.Position = UDim2.fromOffset(0, 5)
+    skyScroll.BackgroundTransparency = 1
+    skyScroll.BorderSizePixel = 0
+    skyScroll.ScrollBarThickness = 4
+    skyScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    skyScroll.CanvasSize = UDim2.new()
+    skyScroll.Parent = skyTab
+    local skyLayout = Instance.new("UIListLayout", skyScroll)
+    skyLayout.Padding = UDim.new(0, 8)
+
+    local originalClockTime = Lighting.ClockTime
+    local originalBrightness = Lighting.Brightness
+
+    local function addSkyButton(name, callback, customBg)
+        local btn = createContentButton(skyScroll, name, UDim2.new(1, -6, 0, 36), UDim2.new(), customBg or Color3.fromRGB(20, 24, 34))
+        btn.MouseButton1Click:Connect(callback)
+        return btn
+    end
+
+    -- 1. Reset Sky Time Button
+    addSkyButton("🔄 Reset Sky Time to Default", function()
+        if activeSkyLoopConnection then
+            activeSkyLoopConnection:Disconnect()
+            activeSkyLoopConnection = nil
+        end
+        Lighting.ClockTime = originalClockTime
+        Lighting.Brightness = originalBrightness
+    end, Color3.fromRGB(120, 35, 45))
+
+    -- 2. Dynamic Every 1 Hour Cycle Button
+    local autoCycleActive = false
+    local autoCycleBtn, autoCycleStroke = createContentButton(skyScroll, "⏱️ Dynamic Sky: Change Every 1 Hour [OFF]", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(28, 33, 46))
+
+    local function toggleDynamicSkyCycle()
+        autoCycleActive = not autoCycleActive
+        if autoCycleActive then
+            autoCycleBtn.Text = "⏱️ Dynamic Sky: Change Every 1 Hour [ON]"
+            TweenService:Create(autoCycleBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
+            TweenService:Create(autoCycleStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
+
+            -- Changes ClockTime automatically every 1 real-life second (simulating 1 in-game hour jump per second)
+            local accumulatedTime = Lighting.ClockTime
+            activeSkyLoopConnection = addConnection(RunService.Stepped:Connect(function(dt)
+                if not autoCycleActive then return end
+                accumulatedTime = (accumulatedTime + (dt * 1)) % 24
+                Lighting.ClockTime = accumulatedTime
+            end))
+        else
+            if activeSkyLoopConnection then
+                activeSkyLoopConnection:Disconnect()
+                activeSkyLoopConnection = nil
+            end
+            autoCycleBtn.Text = "⏱️ Dynamic Sky: Change Every 1 Hour [OFF]"
+            TweenService:Create(autoCycleBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
+            TweenService:Create(autoCycleStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(45, 55, 80)}):Play()
+        end
+    end
+    autoCycleBtn.MouseButton1Click:Connect(toggleDynamicSkyCycle)
+
+    -- 3. Static Hourly Sky Time Selection Buttons (00:00 to 23:00)
+    local hoursData = {
+        {name = "🕛 00:00 Midnight (Deep Night)", time = 0},
+        {name = "🕐 01:00 AM (Late Night)", time = 1},
+        {name = "🕑 02:00 AM (Starlit Night)", time = 2},
+        {name = "🕒 03:00 AM (Pre-Dawn)", time = 3},
+        {name = "🕓 04:00 AM (Deep Twilight)", time = 4},
+        {name = "🕔 05:00 AM (Early Dawn)", time = 5},
+        {name = "🕕 06:00 AM (Sunrise)", time = 6, bg = Color3.fromRGB(100, 60, 30)},
+        {name = "🕖 07:00 AM (Morning Glow)", time = 7},
+        {name = "🕗 08:00 AM (Late Morning)", time = 8},
+        {name = "🕘 09:00 AM (Bright Morning)", time = 9},
+        {name = "🕙 10:00 AM (Late Morning Sun)", time = 10},
+        {name = "🕚 11:00 AM (Pre-Noon)", time = 11},
+        {name = "🕛 12:00 PM (Midday Noon Sun)", time = 12, bg = Color3.fromRGB(80, 70, 20)},
+        {name = "🕐 01:00 PM (Early Afternoon)", time = 13},
+        {name = "🕑 02:00 PM (Bright Afternoon)", time = 14},
+        {name = "🕒 03:00 PM (Late Afternoon Sun)", time = 15},
+        {name = "🕓 04:00 PM (Golden Hour Start)", time = 16},
+        {name = "🕔 05:00 PM (Sunset Peak)", time = 17, bg = Color3.fromRGB(120, 50, 20)},
+        {name = "🕕 06:00 PM (Dusk / Twilight)", time = 18},
+        {name = "🕖 07:00 PM (Evening Dusk)", time = 19},
+        {name = "🕗 08:00 PM (Nightfall)", time = 20},
+        {name = "🕘 09:00 PM (Early Night)", time = 21},
+        {name = "🕙 10:00 PM (Deep Night Sky)", time = 22},
+        {name = "🕚 11:00 PM (Midnight Approach)", time = 23},
+    }
+
+    for _, hd in ipairs(hoursData) do
+        addSkyButton(hd.name, function()
+            if activeSkyLoopConnection then
+                activeSkyLoopConnection:Disconnect()
+                activeSkyLoopConnection = nil
+                autoCycleActive = false
+                autoCycleBtn.Text = "⏱️ Dynamic Sky: Change Every 1 Hour [OFF]"
+                TweenService:Create(autoCycleBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
+            end
+            Lighting.ClockTime = hd.time
+        end, hd.bg)
+    end
+end
+
+--========================================================
+-- MODULE 4: SPECTATE & TELEPORT (ALL PLAYERS)
+--========================================================
+do
+    local selectedTarget = nil
+    local spectating = false
+
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, 0, 0, 22)
+    statusLabel.Position = UDim2.fromOffset(0, 5)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = "Select player to watch/teleport"
+    statusLabel.TextColor3 = Color3.fromRGB(180, 190, 210)
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.TextSize = 12
+    statusLabel.Parent = specTab
+
+    local searchBox = Instance.new("TextBox")
+    searchBox.Size = UDim2.new(1, 0, 0, 32)
+    searchBox.Position = UDim2.fromOffset(0, 32)
+    searchBox.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
+    searchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    searchBox.PlaceholderText = "Search player..."
+    searchBox.Text = ""
+    searchBox.Font = Enum.Font.Gotham
+    searchBox.TextSize = 12
+    searchBox.BorderSizePixel = 0
+    searchBox.Parent = specTab
+    Instance.new("UICorner", searchBox).CornerRadius = UDim.new(0, 6)
+
+    local playerListFrame = Instance.new("ScrollingFrame")
+    playerListFrame.Size = UDim2.new(1, 0, 1, -125)
+    playerListFrame.Position = UDim2.fromOffset(0, 72)
+    playerListFrame.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+    playerListFrame.BorderSizePixel = 0
+    playerListFrame.ScrollBarThickness = 4
+    playerListFrame.CanvasSize = UDim2.new()
+    playerListFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    playerListFrame.Parent = specTab
+    Instance.new("UICorner", playerListFrame).CornerRadius = UDim.new(0, 6)
+    local listLayout = Instance.new("UIListLayout", playerListFrame)
+    listLayout.Padding = UDim.new(0, 4)
+
+    local toggleSpecBtn = createContentButton(specTab, "Start Spectating", UDim2.new(0.5, -4, 0, 38), UDim2.new(0, 0, 1, -42), Color3.fromRGB(28, 33, 46))
+    local teleportBtn = createContentButton(specTab, "Teleport to Player", UDim2.new(0.5, -4, 0, 38), UDim2.new(0.5, 4, 1, -42), Color3.fromRGB(35, 75, 130))
+
+    local function refreshList()
+        for _, child in ipairs(playerListFrame:GetChildren()) do
+            if child:IsA("TextButton") then child:Destroy() end
+        end
+
+        local query = searchBox.Text:lower()
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                if query == "" or p.Name:lower():find(query, 1, true) or p.DisplayName:lower():find(query, 1, true) then
+                    local pBtn = createContentButton(playerListFrame, p.DisplayName .. " (@" .. p.Name .. ")", UDim2.new(1, -6, 0, 30), UDim2.new(), Color3.fromRGB(24, 28, 40))
+                    if selectedTarget == p then pBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 200) end
+                    pBtn.MouseButton1Click:Connect(function()
+                        selectedTarget = p
+                        statusLabel.Text = "Selected: " .. p.Name
+                        refreshList()
+                    end)
+                end
+            end
+        end
+    end
+
+    addConnection(searchBox:GetPropertyChangedSignal("Text"):Connect(refreshList))
+
+    toggleSpecBtn.MouseButton1Click:Connect(function()
+        local camera = Workspace.CurrentCamera
+        if not spectating then
+            if selectedTarget and selectedTarget.Character and selectedTarget.Character:FindFirstChildOfClass("Humanoid") then
+                camera.CameraSubject = selectedTarget.Character:FindFirstChildOfClass("Humanoid")
+                spectating = true
+                toggleSpecBtn.Text = "Stop Spectating"
+                statusLabel.Text = "Watching: " .. selectedTarget.Name
+            end
+        else
+            spectating = false
+            toggleSpecBtn.Text = "Start Spectating"
+            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+                camera.CameraSubject = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            end
+        end
+    end)
+
+    teleportBtn.MouseButton1Click:Connect(function()
+        if selectedTarget and selectedTarget.Character then
+            local targetRoot = selectedTarget.Character:FindFirstChild("HumanoidRootPart")
+            local localRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if targetRoot and localRoot then
+                localRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 3)
+            end
+        end
+    end)
+
+    addConnection(Players.PlayerAdded:Connect(refreshList))
+    addConnection(Players.PlayerRemoving:Connect(refreshList))
+    refreshList()
+end
+
+--========================================================
+-- MODULE 5: SUBMERGE & ARM ANIMATION
+--========================================================
+do
+    local submergeOffset = 7
+    local minSubmergeDepth, maxSubmergeDepth = 2, 100
+    local submergeBaseplate = nil
+    local swimSpeed = 20
+    local riseMultiplier = 1.1
+
+    local submerged = false
+    local animationPlaying = false
+    local savedSubmergeY = nil
+    local savedCameraCFrame = nil
+    local savedCameraType = nil
+    local savedCameraSubject = nil
+    local savedPlatformStand = nil
+    local originalCollision = {}
+    local submergeHighlight = nil
+    local savedAutoRotate = nil
+    local animationTrack = nil
+    local currentCharacter, currentHumanoid, currentRoot
+
+    local function getCharacterParts()
+        currentCharacter = LocalPlayer.Character
+        if not currentCharacter then return false end
+        currentHumanoid = currentCharacter:FindFirstChildOfClass("Humanoid")
+        currentRoot = currentCharacter:FindFirstChild("HumanoidRootPart")
+        return currentHumanoid ~= nil and currentRoot ~= nil
+    end
+
+    local function loadArmAnimation()
+        if not getCharacterParts() then return end
+        local animator = currentHumanoid:FindFirstChildOfClass("Animator")
+        if not animator then
+            animator = Instance.new("Animator")
+            animator.Parent = currentHumanoid
+        end
+
+        local animation = Instance.new("Animation")
+        animation.AnimationId = "rbxassetid://536135263"
+        local ok, track = pcall(function()
+            return animator:LoadAnimation(animation)
+        end)
+        animation:Destroy()
+        if ok then
+            animationTrack = track
+            animationTrack.Looped = true
+        else
+            animationTrack = nil
+        end
+    end
+
+    local submergeBtn, submergeStroke = createContentButton(
+        submergeTab,
+        "Submerge: OFF",
+        UDim2.new(1, 0, 0, 38),
+        UDim2.fromOffset(0, 34),
+        Color3.fromRGB(28, 33, 46)
+    )
+    local armBtn, armStroke = createContentButton(
+        submergeTab,
+        "Arm Animation: OFF",
+        UDim2.new(1, 0, 0, 38),
+        UDim2.fromOffset(0, 82),
+        Color3.fromRGB(28, 33, 46)
     )
 
-    categoryButtons[name] = button
-
-    connect(button.MouseButton1Click, function()
-
-        currentCategory = name
-
-        refreshFilters()
-
-    end)
-
-end
-
--- Filter list
-
-local filterScroll = Instance.new("ScrollingFrame")
-
-filterScroll.Size = UDim2.new(1, 0, 1, -205)
-
-filterScroll.Position = UDim2.fromOffset(0, 118)
-
-filterScroll.BackgroundColor3 = Color3.fromRGB(27, 29, 39)
-
-filterScroll.BorderSizePixel = 0
-
-filterScroll.ScrollBarThickness = 4
-
-filterScroll.CanvasSize = UDim2.new()
-
-filterScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-
-filterScroll.Parent = content
-
-local filterCorner = Instance.new("UICorner")
-
-filterCorner.CornerRadius = UDim.new(0, 8)
-
-filterCorner.Parent = filterScroll
-
-local filterLayout = Instance.new("UIListLayout")
-
-filterLayout.Padding = UDim.new(0, 5)
-
-filterLayout.SortOrder = Enum.SortOrder.LayoutOrder
-
-filterLayout.Parent = filterScroll
-
-local filterPadding = Instance.new("UIPadding")
-
-filterPadding.PaddingTop = UDim.new(0, 7)
-
-filterPadding.PaddingBottom = UDim.new(0, 7)
-
-filterPadding.PaddingLeft = UDim.new(0, 7)
-
-filterPadding.PaddingRight = UDim.new(0, 7)
-
-filterPadding.Parent = filterScroll
-
--- Graphics controls
-
-local graphicsLabel = makeLabel(
-
-    content,
-
-    "GRAPHICS",
-
-    UDim2.fromOffset(120, 17),
-
-    UDim2.new(0, 0, 1, -81),
-
-    11
-
-)
-
-local bloomButton = makeButton(
-
-    content, "BLOOM: ON",
-
-    UDim2.fromOffset(112, 29),
-
-    UDim2.new(0, 0, 1, -58)
-
-)
-
-local raysButton = makeButton(
-
-    content, "RAYS: ON",
-
-    UDim2.fromOffset(112, 29),
-
-    UDim2.new(0, 119, 1, -58)
-
-)
-
-local depthButton = makeButton(
-
-    content, "DEPTH: OFF",
-
-    UDim2.fromOffset(112, 29),
-
-    UDim2.new(0, 238, 1, -58)
-
-)
-
-local iconButton = makeButton(
-
-    content, "HIDE ICONS",
-
-    UDim2.fromOffset(112, 25),
-
-    UDim2.new(0, 0, 1, -25)
-
-)
-
-local statusLabel = makeLabel(
-
-    content,
-
-    "T: Toggle GUI  |  P: Stop script",
-
-    UDim2.new(1, -120, 0, 22),
-
-    UDim2.new(0, 120, 1, -24),
-
-    10
-
-)
-
-statusLabel.TextColor3 = Color3.fromRGB(155, 160, 180)
-
-statusLabel.TextXAlignment = Enum.TextXAlignment.Right
-
---========================================================
-
--- FILTER LIST AND FAVOURITES
-
---========================================================
-
-local function clearFilterButtons()
-
-    for _, child in ipairs(filterScroll:GetChildren()) do
-
-        if child:IsA("Frame") then
-
-            child:Destroy()
-
+    local depthLabel = Instance.new("TextLabel")
+    depthLabel.Size = UDim2.new(1, 0, 0, 24)
+    depthLabel.Position = UDim2.fromOffset(0, 4)
+    depthLabel.BackgroundTransparency = 1
+    depthLabel.Text = "Submerge depth: " .. tostring(submergeOffset) .. " studs | Speed: " .. tostring(swimSpeed)
+    depthLabel.TextColor3 = Color3.fromRGB(180, 190, 210)
+    depthLabel.Font = Enum.Font.Gotham
+    depthLabel.TextSize = 11
+    depthLabel.Parent = submergeTab
+
+    local depthInput = Instance.new("TextBox")
+    depthInput.Name = "SubmergeDepthInput"
+    depthInput.Size = UDim2.new(1, 0, 0, 30)
+    depthInput.Position = UDim2.fromOffset(0, 128)
+    depthInput.BackgroundColor3 = Color3.fromRGB(20, 25, 36)
+    depthInput.BorderSizePixel = 0
+    depthInput.TextColor3 = Color3.fromRGB(235, 240, 250)
+    depthInput.PlaceholderColor3 = Color3.fromRGB(130, 140, 160)
+    depthInput.Font = Enum.Font.Gotham
+    depthInput.TextSize = 12
+    depthInput.ClearTextOnFocus = false
+    depthInput.Text = tostring(submergeOffset)
+    depthInput.PlaceholderText = "Depth in studs (2-100)"
+    depthInput.Parent = submergeTab
+    local depthInputCorner = Instance.new("UICorner")
+    depthInputCorner.CornerRadius = UDim.new(0, 7)
+    depthInputCorner.Parent = depthInput
+
+    local function updateDepth()
+        local value = tonumber(depthInput.Text)
+        if value then
+            submergeOffset = math.clamp(value, minSubmergeDepth, maxSubmergeDepth)
+            depthInput.Text = tostring(submergeOffset)
+            depthLabel.Text = "Depth: " .. tostring(submergeOffset) .. " studs | Speed: " .. tostring(swimSpeed)
+        else
+            depthInput.Text = tostring(submergeOffset)
+        end
+    end
+    depthInput.FocusLost:Connect(updateDepth)
+
+    local function setButtonState(btn, stroke, enabled, label)
+        btn.Text = label .. (enabled and ": ON" or ": OFF")
+        local bg = enabled and Color3.fromRGB(35, 140, 85) or Color3.fromRGB(28, 33, 46)
+        local outline = enabled and Color3.fromRGB(60, 200, 120) or Color3.fromRGB(45, 55, 80)
+        TweenService:Create(btn, TweenInfo.new(0.18), {BackgroundColor3 = bg}):Play()
+        TweenService:Create(stroke, TweenInfo.new(0.18), {Color = outline}):Play()
+    end
+
+    local function restoreCollision()
+        for part, canCollide in pairs(originalCollision) do
+            if part and part.Parent then
+                part.CanCollide = canCollide
+            end
+        end
+        table.clear(originalCollision)
+    end
+
+    local function stopSubmerge(restorePosition)
+        if not submerged then return end
+        submerged = false
+
+        if submergeBaseplate then
+            submergeBaseplate:Destroy()
+            submergeBaseplate = nil
         end
 
-    end
-
-end
-
-function refreshFilters()
-
-    if not running then
-
-        return
-
-    end
-
-    clearFilterButtons()
-
-    allTab.BackgroundColor3 =
-
-        currentTab == "All"
-
-        and Color3.fromRGB(70, 85, 125)
-
-        or Color3.fromRGB(42, 45, 58)
-
-    favouriteTab.BackgroundColor3 =
-
-        currentTab == "Favourites"
-
-        and Color3.fromRGB(110, 85, 45)
-
-        or Color3.fromRGB(42, 45, 58)
-
-    for name, button in pairs(categoryButtons) do
-
-        button.BackgroundColor3 =
-
-            currentCategory == name
-
-            and Color3.fromRGB(70, 85, 125)
-
-            or Color3.fromRGB(42, 45, 58)
-
-    end
-
-    local shown = 0
-
-    for _, filter in ipairs(filters) do
-
-        local matchesTab =
-
-            currentTab == "All"
-
-            or favourites[filter.id] == true
-
-        local matchesCategory =
-
-            currentCategory == "All"
-
-            or filter.category == currentCategory
-
-        local matchesSearch =
-
-            searchText == ""
-
-            or string.find(string.lower(filter.name), searchText, 1, true)
-
-            or string.find(string.lower(filter.category), searchText, 1, true)
-
-        if matchesTab and matchesCategory and matchesSearch then
-
-            shown += 1
-
-            local row = Instance.new("Frame")
-
-            row.Size = UDim2.new(1, -4, 0, 36)
-
-            row.BackgroundColor3 =
-
-                selectedFilter == filter
-
-                and Color3.fromRGB(57, 67, 91)
-
-                or Color3.fromRGB(38, 41, 53)
-
-            row.BorderSizePixel = 0
-
-            row.LayoutOrder = shown
-
-            row.Parent = filterScroll
-
-            local rowCorner = Instance.new("UICorner")
-
-            rowCorner.CornerRadius = UDim.new(0, 6)
-
-            rowCorner.Parent = row
-
-            local selectButton = Instance.new("TextButton")
-
-            selectButton.Size = UDim2.new(1, -48, 1, 0)
-
-            selectButton.Position = UDim2.fromOffset(8, 0)
-
-            selectButton.BackgroundTransparency = 1
-
-            selectButton.Text = filter.name .. "  ·  " .. filter.category
-
-            selectButton.TextColor3 = Color3.fromRGB(235, 235, 245)
-
-            selectButton.TextXAlignment = Enum.TextXAlignment.Left
-
-            selectButton.Font = Enum.Font.Gotham
-
-            selectButton.TextSize = 11
-
-            selectButton.Parent = row
-
-            connect(selectButton.MouseButton1Click, function()
-
-                applyFilter(filter)
-
-                refreshFilters()
-
-            end)
-
-            local starButton = Instance.new("TextButton")
-
-            starButton.Size = UDim2.fromOffset(36, 30)
-
-            starButton.Position = UDim2.new(1, -40, 0, 3)
-
-            starButton.BackgroundTransparency = 1
-
-            starButton.Text = favourites[filter.id] and "★" or "☆"
-
-            starButton.TextColor3 = favourites[filter.id]
-
-                and Color3.fromRGB(255, 205, 85)
-
-                or Color3.fromRGB(160, 165, 180)
-
-            starButton.Font = Enum.Font.GothamBold
-
-            starButton.TextSize = 20
-
-            starButton.Parent = row
-
-            connect(starButton.MouseButton1Click, function()
-
-                favourites[filter.id] = not favourites[filter.id]
-
-                    or nil
-
-                refreshFilters()
-
-            end)
-
+        if getCharacterParts() then
+            currentHumanoid.PlatformStand = savedPlatformStand == true
+            if savedAutoRotate ~= nil then currentHumanoid.AutoRotate = savedAutoRotate end
+            restoreCollision()
+            if restorePosition and savedSubmergeY then
+                local rise = submergeOffset * riseMultiplier
+                currentRoot.CFrame = CFrame.new(currentRoot.Position.X, savedSubmergeY + (rise - submergeOffset), currentRoot.Position.Z) * currentRoot.CFrame.Rotation
+            end
+        else
+            restoreCollision()
         end
 
+        if submergeHighlight then
+            submergeHighlight:Destroy()
+            submergeHighlight = nil
+        end
+
+        local camera = Workspace.CurrentCamera
+        if camera then
+            if savedCameraType then camera.CameraType = savedCameraType end
+            if savedCameraSubject and savedCameraSubject.Parent then
+                camera.CameraSubject = savedCameraSubject
+            end
+            if savedCameraCFrame then camera.CFrame = savedCameraCFrame end
+        end
+
+        savedSubmergeY = nil
+        savedCameraCFrame = nil
+        savedCameraType = nil
+        savedCameraSubject = nil
+        savedAutoRotate = nil
+        setButtonState(submergeBtn, submergeStroke, false, "Submerge")
     end
 
-    if shown == 0 then
+    local function startSubmerge()
+        if submerged or not getCharacterParts() then return end
+        local camera = Workspace.CurrentCamera
+        if not camera then return end
 
-        local empty = makeLabel(
+        savedSubmergeY = currentRoot.Position.Y
+        savedPlatformStand = currentHumanoid.PlatformStand
+        savedAutoRotate = currentHumanoid.AutoRotate
+        savedCameraCFrame = camera.CFrame
+        savedCameraType = camera.CameraType
+        savedCameraSubject = camera.CameraSubject
 
-            filterScroll,
+        table.clear(originalCollision)
+        for _, part in ipairs(currentCharacter:GetDescendants()) do
+            if part:IsA("BasePart") then
+                originalCollision[part] = part.CanCollide
+                part.CanCollide = (part == currentRoot)
+            end
+        end
 
-            currentTab == "Favourites"
+        currentHumanoid.PlatformStand = false
+        currentHumanoid.AutoRotate = false
+        local targetY = savedSubmergeY - submergeOffset
+        currentRoot.CFrame = CFrame.new(currentRoot.Position.X, targetY, currentRoot.Position.Z) * currentRoot.CFrame.Rotation
 
-                and "No favourites yet. Press ☆ beside a filter to save it."
+        submergeBaseplate = Instance.new("Part")
+        submergeBaseplate.Name = "SubmergeSafetyBaseplate"
+        submergeBaseplate.Size = Vector3.new(100, 1, 100)
+        submergeBaseplate.Anchored = true
+        submergeBaseplate.CanCollide = true
+        submergeBaseplate.CanTouch = false
+        submergeBaseplate.CanQuery = false
+        submergeBaseplate.Transparency = 1
+        submergeBaseplate.TopSurface = Enum.SurfaceType.Smooth
+        submergeBaseplate.BottomSurface = Enum.SurfaceType.Smooth
+        local platformY = targetY - currentHumanoid.HipHeight - (currentRoot.Size.Y * 0.5) - 0.5
+        submergeBaseplate.CFrame = CFrame.new(currentRoot.Position.X, platformY, currentRoot.Position.Z)
+        submergeBaseplate.Parent = Workspace
 
-                or "No filters found.",
+        submergeHighlight = Instance.new("Highlight")
+        submergeHighlight.Name = "SubmergeHighlight"
+        submergeHighlight.FillTransparency = 1
+        submergeHighlight.OutlineTransparency = 0
+        submergeHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        submergeHighlight.Parent = currentCharacter
 
-            UDim2.new(1, -15, 0, 50),
-
-            UDim2.fromOffset(8, 8),
-
-            11
-
-        )
-
-        empty.TextColor3 = Color3.fromRGB(155, 160, 175)
-
-        empty.TextWrapped = true
-
+        submerged = true
+        setButtonState(submergeBtn, submergeStroke, true, "Submerge")
     end
 
+    toggleSubmerge = function()
+        if submerged then
+            stopSubmerge(true)
+        else
+            startSubmerge()
+        end
+    end
+
+    local function toggleArmAnimation()
+        if animationPlaying then
+            animationPlaying = false
+            if animationTrack then animationTrack:Stop(0.15) end
+            setButtonState(armBtn, armStroke, false, "Arm Animation")
+        else
+            if not animationTrack then loadArmAnimation() end
+            if animationTrack then
+                animationPlaying = true
+                animationTrack:Play(0.15)
+                setButtonState(armBtn, armStroke, true, "Arm Animation")
+            else
+                armBtn.Text = "Animation unavailable"
+            end
+        end
+    end
+
+    submergeBtn.MouseButton1Click:Connect(toggleSubmerge)
+    armBtn.MouseButton1Click:Connect(toggleArmAnimation)
+
+    addConnection(RunService.RenderStepped:Connect(function()
+        if submerged then
+            if not getCharacterParts() then
+                stopSubmerge(false)
+                return
+            end
+            local targetY = savedSubmergeY - submergeOffset
+            currentRoot.CFrame = CFrame.new(
+                currentRoot.Position.X,
+                targetY,
+                currentRoot.Position.Z
+            ) * currentRoot.CFrame.Rotation
+            if submergeBaseplate then
+                local platformY = targetY - currentHumanoid.HipHeight - (currentRoot.Size.Y * 0.5) - 0.5
+                submergeBaseplate.CFrame = CFrame.new(currentRoot.Position.X, platformY, currentRoot.Position.Z)
+            end
+            currentRoot.AssemblyLinearVelocity = currentHumanoid.MoveDirection * swimSpeed
+        end
+    end))
+
+    addConnection(LocalPlayer.CharacterAdded:Connect(function()
+        if submerged then
+            stopSubmerge(false)
+        end
+        if animationTrack then
+            pcall(function() animationTrack:Stop() end)
+            animationTrack = nil
+        end
+        animationPlaying = false
+        setButtonState(armBtn, armStroke, false, "Arm Animation")
+        task.wait(0.25)
+        loadArmAnimation()
+    end))
+
+    cleanupSubmerge = function()
+        stopSubmerge(false)
+        animationPlaying = false
+        if animationTrack then
+            pcall(function() animationTrack:Stop() end)
+            animationTrack = nil
+        end
+    end
+
+    loadArmAnimation()
 end
 
-createCategoryButton("All")
-
-for _, category in ipairs(categories) do
-
-    createCategoryButton(category.name)
-
-end
-
-connect(allTab.MouseButton1Click, function()
-
-    currentTab = "All"
-
-    currentCategory = "All"
-
-    refreshFilters()
-
-end)
-
-connect(favouriteTab.MouseButton1Click, function()
-
-    currentTab = "Favourites"
-
-    currentCategory = "All"
-
-    refreshFilters()
-
-end)
-
-connect(searchBox:GetPropertyChangedSignal("Text"), function()
-
-    searchText = string.lower(searchBox.Text)
-
-    refreshFilters()
-
-end)
-
-connect(resetButton.MouseButton1Click, function()
-
-    selectedFilter = nil
-
-    resetVisuals()
-
-    refreshFilters()
-
-end)
-
 --========================================================
-
--- GRAPHICS BUTTONS
-
+-- CHARACTER REFRESH
 --========================================================
+local refreshingCharacter = false
 
-local bloomEnabled = true
+local function refreshCharacter()
+    if refreshingCharacter then return end
 
-local raysEnabled = true
+    local oldCharacter = LocalPlayer.Character
+    local oldRoot = oldCharacter and (
+        oldCharacter:FindFirstChild("HumanoidRootPart")
+        or oldCharacter:FindFirstChild("Torso")
+        or oldCharacter:FindFirstChild("UpperTorso")
+    )
+    local oldHumanoid = oldCharacter and oldCharacter:FindFirstChildOfClass("Humanoid")
 
-local depthEnabled = false
+    if not oldCharacter or not oldRoot or not oldHumanoid then
+        warn("[TheUnionHub] Refresh failed: character parts not found.")
+        return
+    end
 
-connect(bloomButton.MouseButton1Click, function()
+    local returnCFrame = oldRoot.CFrame
+    refreshingCharacter = true
 
-    bloomEnabled = not bloomEnabled
+    if cleanupSubmerge then
+        pcall(cleanupSubmerge)
+    end
 
-    bloomEffect.Enabled = bloomEnabled
+    local characterAddedConnection
+    local finished = false
 
-    bloomButton.Text = bloomEnabled and "BLOOM: ON" or "BLOOM: OFF"
+    local function restoreNewCharacter(newCharacter)
+        if finished then return end
+        finished = true
 
-end)
+        task.spawn(function()
+            local newRoot = newCharacter:WaitForChild("HumanoidRootPart", 10)
+            local newHumanoid = newCharacter:WaitForChild("Humanoid", 10)
 
-connect(raysButton.MouseButton1Click, function()
+            if newRoot and newHumanoid and newCharacter == LocalPlayer.Character then
+                pcall(function()
+                    newCharacter:PivotTo(returnCFrame)
+                    newRoot.AssemblyLinearVelocity = Vector3.zero
+                    newRoot.AssemblyAngularVelocity = Vector3.zero
+                end)
+            end
 
-    raysEnabled = not raysEnabled
-
-    raysEffect.Enabled = raysEnabled
-
-    raysButton.Text = raysEnabled and "RAYS: ON" or "RAYS: OFF"
-
-end)
-
-connect(depthButton.MouseButton1Click, function()
-
-    depthEnabled = not depthEnabled
-
-    depthEffect.Enabled = depthEnabled
-
-    depthEffect.FarIntensity = 0.15
-
-    depthEffect.NearIntensity = 0.1
-
-    depthEffect.FocusDistance = 35
-
-    depthEffect.InFocusRadius = 25
-
-    depthButton.Text = depthEnabled and "DEPTH: ON" or "DEPTH: OFF"
-
-end)
-
---========================================================
-
--- HIDE ROBLOX ICONS
-
---========================================================
-
-local iconsHidden = false
-
-local coreGuiTypes = {
-
-    Enum.CoreGuiType.Backpack,
-
-    Enum.CoreGuiType.Chat,
-
-    Enum.CoreGuiType.EmotesMenu,
-
-    Enum.CoreGuiType.Health,
-
-    Enum.CoreGuiType.PlayerList
-
-}
-
-local function setIconsHidden(hidden)
-
-    iconsHidden = hidden
-
-    for _, guiType in ipairs(coreGuiTypes) do
-
-        pcall(function()
-
-            StarterGui:SetCoreGuiEnabled(guiType, not hidden)
-
+            if characterAddedConnection then
+                characterAddedConnection:Disconnect()
+                characterAddedConnection = nil
+            end
+            refreshingCharacter = false
         end)
-
     end
 
-    pcall(function()
+    characterAddedConnection = LocalPlayer.CharacterAdded:Connect(restoreNewCharacter)
 
-        StarterGui:SetCore("TopbarEnabled", not hidden)
-
+    local died = pcall(function()
+        oldHumanoid.Health = 0
     end)
 
-    iconButton.Text = hidden and "SHOW ICONS" or "HIDE ICONS"
+    if not died then
+        if characterAddedConnection then
+            characterAddedConnection:Disconnect()
+            characterAddedConnection = nil
+        end
+        refreshingCharacter = false
+        return
+    end
 
+    task.delay(15, function()
+        if not finished then
+            if characterAddedConnection then
+                characterAddedConnection:Disconnect()
+                characterAddedConnection = nil
+            end
+            refreshingCharacter = false
+        end
+    end)
 end
 
-connect(iconButton.MouseButton1Click, function()
-
-    setIconsHidden(not iconsHidden)
-
-end)
-
 --========================================================
-
--- MINIMIZE / CLOSE
-
+-- WINDOW DRAGGING & GLOBAL SHORTCUT KEYBINDS [T, P, Q, M, G]
 --========================================================
-
-local normalSize = main.Size
-
-connect(minimizeButton.MouseButton1Click, function()
-
-    minimized = not minimized
-    moduleTabBar.Visible = not minimized
-    if not minimized then
-        selectModule(activeModule)
-    else
-        content.Visible = false
-        playerPage.Visible = false
-    end
-    main.Size = minimized
-        and UDim2.fromOffset(390, 42)
-        or normalSize
-
-    minimizeButton.Text = minimized and "+" or "—"
-
-end)
-
-connect(closeButton.MouseButton1Click, function()
-
-    guiVisible = false
-
-    gui.Enabled = false
-
-end)
-
---========================================================
-
--- KEYBOARD SHORTCUTS
-
---========================================================
-
-local function cleanup()
-
-    if not running then
-
-        return
-
-    end
-
-    running = false
-
-    for targetPlayer in pairs(ESPObjects) do
-        removePlayerESP(targetPlayer)
-    end
-
-    for targetPlayer in pairs(ESPPlayerConnections) do
-        removeESPPlayerConnections(targetPlayer)
-    end
-
-    for _, connection in ipairs(connections) do
-
-        pcall(function()
-
-            connection:Disconnect()
-
-        end)
-
-    end
-
-    resetVisuals()
-
-    if createdAtmosphere and existingAtmosphere then
-
-        existingAtmosphere:Destroy()
-
-    end
-
-    colorEffect:Destroy()
-
-    bloomEffect:Destroy()
-
-    raysEffect:Destroy()
-
-    depthEffect:Destroy()
-
-    if gui and gui.Parent then
-
-        gui:Destroy()
-
-    end
-
-    setIconsHidden(false)
-
-    _G.AestheticStudioCleanup = nil
-
-end
-
-_G.AestheticStudioCleanup = cleanup
-
-connect(UserInputService.InputBegan, function(input, processed)
-
-    if processed or not running then
-
-        return
-
-    end
-
+addConnection(UserInputService.InputBegan:Connect(function(input, processed)
+    if processed or UserInputService:GetFocusedTextBox() then return end
     if input.KeyCode == Enum.KeyCode.T then
-
-        guiVisible = not guiVisible
-
-        gui.Enabled = guiVisible
-
-    elseif input.KeyCode == Enum.KeyCode.R then
-        togglePlayerESP()
+        gui.Enabled = not gui.Enabled
     elseif input.KeyCode == Enum.KeyCode.P then
-
-        cleanup()
-
+        destroyAll()
+    elseif input.KeyCode == Enum.KeyCode.Q then
+        if toggleFriendESP then
+            toggleFriendESP()
+        end
+    elseif input.KeyCode == Enum.KeyCode.M then
+        if toggleSubmerge then
+            toggleSubmerge()
+        end
+    elseif input.KeyCode == Enum.KeyCode.G then
+        refreshCharacter()
     end
+end))
 
+local minimized = false
+minimizeBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    navBar.Visible = not minimized
+    for _, content in pairs(tabContents) do content.Visible = false end
+    if not minimized then
+        tabContents["Main"].Visible = true
+        styleButton(tabButtons["Main"], true)
+    end
+    local targetSize = minimized and UDim2.fromOffset(460, 42) or UDim2.fromOffset(460, 530)
+    TweenService:Create(mainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = targetSize}):Play()
+    minimizeBtn.Text = minimized and "+" or "—"
 end)
 
---========================================================
+closeBtn.MouseButton1Click:Connect(destroyAll)
 
--- INITIALIZE
-
---========================================================
-
--- PLAYER ESP PLAYER TRACKING
-
-connect(Players.PlayerAdded, setupESPPlayer)
-connect(Players.PlayerRemoving, removeESPPlayerConnections)
-
-for _, targetPlayer in ipairs(Players:GetPlayers()) do
-    setupESPPlayer(targetPlayer)
+local dragging, dragStart, startPos = false, Vector3.new(), UDim2.new()
+local function onInputBegan(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+    end
 end
+addConnection(header.InputBegan:Connect(onInputBegan))
+addConnection(robotHead.InputBegan:Connect(onInputBegan))
 
-refreshFilters()
-selectModule("Aesthetic")
-refreshPlayerESP()
+addConnection(UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end))
+addConnection(UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end))
 
-print("Universal Studio loaded.")
-
-print("Total filters:", #filters)
-
-print("T = Show/Hide GUI | R = Toggle Player ESP")
-
-print("P = Stop script and restore settings")
+print("⚡ THEUNION HUB v3.3 (30 Pro RTX Shaders & Expanded Server Browser) Loaded Successfully!")
