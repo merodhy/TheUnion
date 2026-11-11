@@ -1,5 +1,6 @@
 --========================================================
--- THEUNION HUB (Universal Multi-Tool Hub - Fixed Batch Catalog Pricing)
+-- THEUNION HUB (Core Stability & Lifecycle Update)
+-- Based on Server Browser 2.0; existing GUI layout and module features retained.
 -- Client-side LocalScript / Executor Compatible
 --========================================================
 
@@ -24,15 +25,42 @@ if oldGui then
     oldGui:Destroy()
 end
 
--- Global cleanup / destroy tracking
+-- Global lifecycle management. Every long-lived module can register one cleanup callback.
 local activeConnections = {}
+local cleanupCallbacks = {}
+local shuttingDown = false
+local cleanupComplete = false
+
 local function addConnection(conn)
-    table.insert(activeConnections, conn)
+    if conn and typeof(conn) == "RBXScriptConnection" then
+        table.insert(activeConnections, conn)
+        if shuttingDown then
+            pcall(function() conn:Disconnect() end)
+        end
+    end
     return conn
 end
 
--- Forward declarations for GUI destruction & ESP toggle
-local gui, destroyAll, toggleFriendESP, cleanupSubmerge, toggleSubmerge
+local function registerCleanup(callback)
+    if type(callback) ~= "function" then return end
+    if shuttingDown then
+        pcall(callback)
+        return
+    end
+    table.insert(cleanupCallbacks, callback)
+end
+
+local function disconnectConnection(conn)
+    if conn and typeof(conn) == "RBXScriptConnection" then
+        pcall(function() conn:Disconnect() end)
+    end
+end
+
+-- Forward declarations for GUI destruction & module cleanup.
+local gui, destroyAll, toggleFriendESP, cleanupSubmerge, toggleSubmerge, cleanupPlayerESP
+local refreshingCharacter = false
+local refreshCharacterGeneration = 0
+local playerESPManager = {}
 
 -- Save original sky & lighting settings for reset functionality
 local originalSky = Lighting:FindFirstChildOfClass("Sky") and Lighting:FindFirstChildOfClass("Sky"):Clone() or nil
@@ -49,15 +77,24 @@ local originalLightingState = {
 
 -- Safe HTTP Request Helper
 local function httpRequest(options)
-    local req = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
-    if req then
-        local success, res = pcall(function() return req(options) end)
-        if success and res then return res end
-    else
-        local success, res = pcall(function() return game:HttpGet(options.Url) end)
-        if success then return { Success = true, Body = res } end
+    if type(options) ~= "table" or type(options.Url) ~= "string" then
+        return nil, "Invalid request options"
     end
-    return nil
+    local req = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+    local ok, response
+    if type(req) == "function" then
+        ok, response = pcall(req, options)
+    else
+        ok, response = pcall(function() return game:HttpGet(options.Url) end)
+        if ok and type(response) == "string" then
+            response = {Success = true, StatusCode = 200, Body = response}
+        end
+    end
+    if not ok then return nil, tostring(response) end
+    if type(response) ~= "table" or type(response.Body) ~= "string" then
+        return nil, "Malformed HTTP response"
+    end
+    return response
 end
 
 --========================================================
@@ -74,8 +111,8 @@ gui.Parent = PlayerGui
 -- Main Container Frame
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainHub"
-mainFrame.Size = UDim2.fromOffset(460, 530)
-mainFrame.Position = UDim2.new(0.5, -230, 0.5, -235)
+mainFrame.Size = UDim2.fromOffset(600, 530)
+mainFrame.Position = UDim2.new(0.5, -300, 0.5, -235)
 mainFrame.BackgroundColor3 = Color3.fromRGB(12, 15, 22)
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
@@ -323,14 +360,14 @@ end)
 
 -- Navigation Bar
 local navBar = Instance.new("Frame")
-navBar.Size = UDim2.new(1, -20, 0, 36)
-navBar.Position = UDim2.fromOffset(10, 48)
+navBar.Size = UDim2.fromOffset(108, 440)
+navBar.Position = UDim2.fromOffset(10, 52)
 navBar.BackgroundTransparency = 1
 navBar.Parent = mainFrame
 
 local navLayout = Instance.new("UIListLayout")
-navLayout.FillDirection = Enum.FillDirection.Horizontal
-navLayout.Padding = UDim.new(0, 3)
+navLayout.FillDirection = Enum.FillDirection.Vertical
+navLayout.Padding = UDim.new(0, 5)
 navLayout.SortOrder = Enum.SortOrder.LayoutOrder
 navLayout.Parent = navBar
 
@@ -348,9 +385,9 @@ local function styleButton(btn, active)
     end
 end
 
-local function createTabButton(name, widthScale)
+local function createTabButton(name)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(widthScale, -2, 1, 0)
+    btn.Size = UDim2.new(1, 0, 0, 34)
     btn.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
     btn.TextColor3 = Color3.fromRGB(240, 240, 255)
     btn.Text = name
@@ -372,8 +409,8 @@ local function createTabButton(name, widthScale)
 
     local contentFrame = Instance.new("Frame")
     contentFrame.Name = name .. "Tab"
-    contentFrame.Size = UDim2.new(1, -24, 1, -100)
-    contentFrame.Position = UDim2.fromOffset(12, 92)
+    contentFrame.Size = UDim2.new(1, -142, 1, -62)
+    contentFrame.Position = UDim2.fromOffset(130, 52)
     contentFrame.BackgroundTransparency = 1
     contentFrame.Visible = false
     contentFrame.Parent = mainFrame
@@ -392,14 +429,18 @@ local function createTabButton(name, widthScale)
     return contentFrame
 end
 
-local mainTab = createTabButton("Main", 0.12)
-local friendsTab = createTabButton("Friends", 0.13)
-local serversTab = createTabButton("Servers", 0.13)
-local searchTab = createTabButton("Search", 0.14)
-local skyTab = createTabButton("Sky", 0.12)
-local filterTab = createTabButton("Filters", 0.12)
-local specTab = createTabButton("Spectate", 0.12)
-local submergeTab = createTabButton("Submerge", 0.12)
+local mainTab = createTabButton("Main")
+local friendsTab = createTabButton("Friends")
+local serversTab = createTabButton("Servers")
+local searchTab = createTabButton("Search")
+local skyTab = createTabButton("Sky")
+local filterTab = createTabButton("Filters")
+local specTab = createTabButton("Spectate")
+local submergeTab = createTabButton("Submerge")
+local sessionTab = createTabButton("Session")
+local performanceTab = createTabButton("Performance")
+local notificationsTab = createTabButton("Notifications")
+local settingsTab = createTabButton("Settings")
 
 tabContents["Main"].Visible = true
 styleButton(tabButtons["Main"], true)
@@ -487,35 +528,629 @@ local function createContentButton(parent, text, size, pos, defaultBg)
 end
 
 --========================================================
+-- SESSION TAB: LOCAL PLAYER JOIN / LEAVE ACTIVITY LOG
+--========================================================
+do
+    local sessionJoins = 0
+    local sessionLeaves = 0
+    local activityRows = {}
+    local activityRecords = {}
+    local MAX_ACTIVITY_ROWS = 150
+
+    local sessionHeader = Instance.new("TextLabel")
+    sessionHeader.Size = UDim2.new(1, -235, 0, 26)
+    sessionHeader.Position = UDim2.fromOffset(0, 2)
+    sessionHeader.BackgroundTransparency = 1
+    sessionHeader.Text = "LOCAL SESSION ACTIVITY"
+    sessionHeader.TextColor3 = Color3.fromRGB(0, 220, 255)
+    sessionHeader.Font = Enum.Font.GothamBold
+    sessionHeader.TextSize = 13
+    sessionHeader.TextXAlignment = Enum.TextXAlignment.Left
+    sessionHeader.Parent = sessionTab
+
+    local clearSessionBtn = createContentButton(
+        sessionTab,
+        "Clear Session",
+        UDim2.fromOffset(112, 28),
+        UDim2.new(1, -112, 0, 0),
+        Color3.fromRGB(130, 45, 55)
+    )
+
+    local exportSessionBtn = createContentButton(
+        sessionTab,
+        "Export Log",
+        UDim2.fromOffset(108, 28),
+        UDim2.new(1, -224, 0, 0),
+        Color3.fromRGB(35, 75, 130)
+    )
+
+    local sessionStats = Instance.new("TextLabel")
+    sessionStats.Size = UDim2.new(1, 0, 0, 24)
+    sessionStats.Position = UDim2.fromOffset(0, 34)
+    sessionStats.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+    sessionStats.BorderSizePixel = 0
+    sessionStats.TextColor3 = Color3.fromRGB(185, 205, 225)
+    sessionStats.Font = Enum.Font.GothamSemibold
+    sessionStats.TextSize = 10
+    sessionStats.Text = "Players: 0 | Joined: 0 | Left: 0"
+    sessionStats.Parent = sessionTab
+    Instance.new("UICorner", sessionStats).CornerRadius = UDim.new(0, 5)
+
+    local sessionSearch = Instance.new("TextBox")
+    sessionSearch.Name = "SessionSearch"
+    sessionSearch.Size = UDim2.new(1, 0, 0, 25)
+    sessionSearch.Position = UDim2.fromOffset(0, 63)
+    sessionSearch.BackgroundColor3 = Color3.fromRGB(24, 29, 42)
+    sessionSearch.BorderSizePixel = 0
+    sessionSearch.TextColor3 = Color3.fromRGB(235, 240, 250)
+    sessionSearch.PlaceholderColor3 = Color3.fromRGB(130, 145, 165)
+    sessionSearch.PlaceholderText = "Search player, username, or event..."
+    sessionSearch.Text = ""
+    sessionSearch.ClearTextOnFocus = false
+    sessionSearch.Font = Enum.Font.Gotham
+    sessionSearch.TextSize = 10
+    sessionSearch.Parent = sessionTab
+    Instance.new("UICorner", sessionSearch).CornerRadius = UDim.new(0, 5)
+
+    local activityList = Instance.new("ScrollingFrame")
+    activityList.Name = "SessionActivityLog"
+    activityList.Size = UDim2.new(1, 0, 1, -100)
+    activityList.Position = UDim2.fromOffset(0, 94)
+    activityList.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+    activityList.BorderSizePixel = 0
+    activityList.ScrollBarThickness = 4
+    activityList.CanvasSize = UDim2.new()
+    activityList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    activityList.Parent = sessionTab
+    Instance.new("UICorner", activityList).CornerRadius = UDim.new(0, 6)
+
+    local activityPadding = Instance.new("UIPadding")
+    activityPadding.PaddingTop = UDim.new(0, 6)
+    activityPadding.PaddingBottom = UDim.new(0, 6)
+    activityPadding.PaddingLeft = UDim.new(0, 6)
+    activityPadding.PaddingRight = UDim.new(0, 6)
+    activityPadding.Parent = activityList
+
+    local activityLayout = Instance.new("UIListLayout")
+    activityLayout.Padding = UDim.new(0, 4)
+    activityLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    activityLayout.Parent = activityList
+
+    local function applySessionFilter()
+        local query = string.lower(sessionSearch.Text or "")
+        for _, row in ipairs(activityRows) do
+            if row and row.Parent then
+                local searchable = string.lower(
+                    tostring(row:GetAttribute("SearchText") or "")
+                )
+                row.Visible = query == "" or string.find(searchable, query, 1, true) ~= nil
+            end
+        end
+    end
+
+    addConnection(sessionSearch:GetPropertyChangedSignal("Text"):Connect(applySessionFilter))
+
+    local function updateSessionStats()
+        sessionStats.Text = string.format(
+            "Players: %d  |  Joined: %d  |  Left: %d",
+            #Players:GetPlayers(),
+            sessionJoins,
+            sessionLeaves
+        )
+    end
+
+    local function addActivity(eventType, playerName, username, timestamp)
+        local joined = eventType == "JOIN"
+        local row = Instance.new("Frame")
+        row.Name = "Activity_" .. eventType
+        row.Size = UDim2.new(1, -4, 0, 42)
+        row.BackgroundColor3 = Color3.fromRGB(24, 29, 42)
+        row.BorderSizePixel = 0
+        row.Parent = activityList
+        row:SetAttribute("SearchText", eventType .. " " .. playerName .. " " .. username)
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
+
+        local accent = Instance.new("Frame")
+        accent.Size = UDim2.new(0, 3, 1, -10)
+        accent.Position = UDim2.fromOffset(6, 5)
+        accent.BackgroundColor3 = joined and Color3.fromRGB(55, 200, 120) or Color3.fromRGB(235, 90, 95)
+        accent.BorderSizePixel = 0
+        accent.Parent = row
+        Instance.new("UICorner", accent).CornerRadius = UDim.new(1, 0)
+
+        local eventLabel = Instance.new("TextLabel")
+        eventLabel.Size = UDim2.new(1, -20, 0, 19)
+        eventLabel.Position = UDim2.fromOffset(16, 3)
+        eventLabel.BackgroundTransparency = 1
+        eventLabel.Text = (joined and "▲ JOINED  " or "▼ LEFT  ") .. playerName .. " (@" .. username .. ")"
+        eventLabel.TextColor3 = joined and Color3.fromRGB(105, 230, 155) or Color3.fromRGB(255, 130, 130)
+        eventLabel.Font = Enum.Font.GothamBold
+        eventLabel.TextSize = 10
+        eventLabel.TextXAlignment = Enum.TextXAlignment.Left
+        eventLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        eventLabel.Parent = row
+
+        local timeLabel = Instance.new("TextLabel")
+        timeLabel.Size = UDim2.new(1, -20, 0, 15)
+        timeLabel.Position = UDim2.fromOffset(16, 22)
+        timeLabel.BackgroundTransparency = 1
+        timeLabel.Text = timestamp or os.date("%H:%M:%S")
+        timeLabel.TextColor3 = Color3.fromRGB(135, 155, 180)
+        timeLabel.Font = Enum.Font.Gotham
+        timeLabel.TextSize = 9
+        timeLabel.TextXAlignment = Enum.TextXAlignment.Left
+        timeLabel.Parent = row
+
+        table.insert(activityRows, row)
+        table.insert(activityRecords, {
+            event = eventType,
+            displayName = tostring(playerName),
+            username = tostring(username),
+            timestamp = tostring(timestamp or os.date("%Y-%m-%d %H:%M:%S"))
+        })
+        if #activityRows > MAX_ACTIVITY_ROWS then
+            local oldest = table.remove(activityRows, 1)
+            table.remove(activityRecords, 1)
+            if oldest then oldest:Destroy() end
+        end
+        applySessionFilter()
+
+        task.defer(function()
+            if activityList and activityList.Parent then
+                activityList.CanvasPosition = Vector2.new(
+                    0,
+                    math.max(0, activityLayout.AbsoluteContentSize.Y - activityList.AbsoluteSize.Y)
+                )
+            end
+        end)
+    end
+
+    -- Snapshot other players already present when tracking starts.
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            addActivity("JOIN", player.DisplayName, player.Name, os.date("%H:%M:%S") .. "  •  Already in server")
+        end
+    end
+
+    addConnection(Players.PlayerAdded:Connect(function(player)
+        sessionJoins = sessionJoins + 1
+        addActivity("JOIN", player.DisplayName, player.Name)
+        updateSessionStats()
+    end))
+
+    addConnection(Players.PlayerRemoving:Connect(function(player)
+        sessionLeaves = sessionLeaves + 1
+        addActivity("LEAVE", player.DisplayName, player.Name)
+        updateSessionStats()
+    end))
+
+    exportSessionBtn.MouseButton1Click:Connect(function()
+        local lines = {"THE UNION HUB - SESSION ACTIVITY", "Exported: " .. os.date("%Y-%m-%d %H:%M:%S"), ""}
+        for _, record in ipairs(activityRecords) do
+            table.insert(lines, string.format("[%s] %s - %s (@%s)", record.timestamp, record.event, record.displayName, record.username))
+        end
+        local output = table.concat(lines, "\n")
+        local saved = false
+        if type(writefile) == "function" then
+            saved = pcall(writefile, "TheUnionHub_SessionLog.txt", output)
+        end
+        local copied = false
+        if not saved and type(setclipboard) == "function" then
+            copied = pcall(setclipboard, output)
+        end
+        if saved then
+            exportSessionBtn.Text = "Saved Log!"
+        elseif copied then
+            exportSessionBtn.Text = "Copied!"
+        else
+            exportSessionBtn.Text = "Export unavailable"
+        end
+        task.delay(2, function()
+            if exportSessionBtn and exportSessionBtn.Parent then exportSessionBtn.Text = "Export Log" end
+        end)
+    end)
+
+    clearSessionBtn.MouseButton1Click:Connect(function()
+        for _, row in ipairs(activityRows) do
+            if row and row.Parent then row:Destroy() end
+        end
+        table.clear(activityRows)
+        table.clear(activityRecords)
+        sessionJoins = 0
+        sessionLeaves = 0
+        updateSessionStats()
+    end)
+
+    updateSessionStats()
+end
+
+--========================================================
+-- ADDITIVE MODULES: PERFORMANCE, NOTIFICATION CENTER, SETTINGS
+-- Existing tabs and controls above remain intact.
+--========================================================
+do
+    local CONFIG_FILE = "TheUnionHub_Settings.json"
+    local hubSettings = {
+        joinNotifications = true,
+        leaveNotifications = true,
+        characterNotifications = true,
+        toastNotifications = true,
+        toastDuration = 3,
+        performanceInterval = 1
+    }
+
+    local function loadHubSettings()
+        if type(isfile) ~= "function" or type(readfile) ~= "function" then
+            return false
+        end
+        local ok, exists = pcall(isfile, CONFIG_FILE)
+        if not ok or not exists then return false end
+        local readOk, raw = pcall(readfile, CONFIG_FILE)
+        if not readOk or type(raw) ~= "string" then return false end
+        local decodeOk, decoded = pcall(function()
+            return HttpService:JSONDecode(raw)
+        end)
+        if not decodeOk or type(decoded) ~= "table" then return false end
+        if type(decoded.joinNotifications) == "boolean" then hubSettings.joinNotifications = decoded.joinNotifications end
+        if type(decoded.leaveNotifications) == "boolean" then hubSettings.leaveNotifications = decoded.leaveNotifications end
+        if type(decoded.characterNotifications) == "boolean" then hubSettings.characterNotifications = decoded.characterNotifications end
+        if type(decoded.toastNotifications) == "boolean" then hubSettings.toastNotifications = decoded.toastNotifications end
+        if decoded.toastDuration == 3 or decoded.toastDuration == 5 or decoded.toastDuration == 8 then hubSettings.toastDuration = decoded.toastDuration end
+        if decoded.performanceInterval == 1 or decoded.performanceInterval == 2 or decoded.performanceInterval == 5 then
+            hubSettings.performanceInterval = decoded.performanceInterval
+        end
+        return true
+    end
+
+    local function saveHubSettings()
+        if type(writefile) ~= "function" then return false end
+        local ok, encoded = pcall(function() return HttpService:JSONEncode(hubSettings) end)
+        if not ok then return false end
+        local writeOk = pcall(writefile, CONFIG_FILE, encoded)
+        return writeOk
+    end
+
+    loadHubSettings()
+
+    local function makeSectionLabel(parent, text, y, height)
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -4, 0, height or 24)
+        label.Position = UDim2.fromOffset(2, y)
+        label.BackgroundTransparency = 1
+        label.Text = text
+        label.TextColor3 = Color3.fromRGB(0, 220, 255)
+        label.Font = Enum.Font.GothamBold
+        label.TextSize = 12
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = parent
+        return label
+    end
+
+    local function makeValueLabel(parent, text, y, height)
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -4, 0, height or 28)
+        label.Position = UDim2.fromOffset(2, y)
+        label.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+        label.BorderSizePixel = 0
+        label.Text = text
+        label.TextColor3 = Color3.fromRGB(205, 220, 240)
+        label.Font = Enum.Font.GothamSemibold
+        label.TextSize = 10
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = parent
+        Instance.new("UICorner", label).CornerRadius = UDim.new(0, 5)
+        return label
+    end
+
+    -- Notification center
+    local notificationRows = {}
+    local MAX_NOTIFICATION_ROWS = 60
+    local notificationList = Instance.new("ScrollingFrame")
+    notificationList.Name = "NotificationCenterList"
+    notificationList.Size = UDim2.new(1, 0, 1, -42)
+    notificationList.Position = UDim2.fromOffset(0, 38)
+    notificationList.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+    notificationList.BorderSizePixel = 0
+    notificationList.ScrollBarThickness = 4
+    notificationList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    notificationList.CanvasSize = UDim2.new()
+    notificationList.Parent = notificationsTab
+    Instance.new("UICorner", notificationList).CornerRadius = UDim.new(0, 6)
+    local notificationLayout = Instance.new("UIListLayout")
+    notificationLayout.Padding = UDim.new(0, 4)
+    notificationLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    notificationLayout.Parent = notificationList
+    local notificationPadding = Instance.new("UIPadding")
+    notificationPadding.PaddingTop = UDim.new(0, 6)
+    notificationPadding.PaddingLeft = UDim.new(0, 6)
+    notificationPadding.PaddingRight = UDim.new(0, 6)
+    notificationPadding.Parent = notificationList
+
+    local notificationHeader = makeSectionLabel(notificationsTab, "NOTIFICATION CENTER", 2, 28)
+    notificationHeader.Size = UDim2.new(1, -110, 0, 28)
+    local clearNotificationsBtn = createContentButton(
+        notificationsTab, "Clear", UDim2.fromOffset(90, 26), UDim2.new(1, -90, 0, 2),
+        Color3.fromRGB(130, 45, 55)
+    )
+
+    local toastFrame = Instance.new("Frame")
+    toastFrame.Name = "UnionNotificationToast"
+    toastFrame.Size = UDim2.fromOffset(320, 42)
+    toastFrame.Position = UDim2.new(0.5, -160, 0, 54)
+    toastFrame.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
+    toastFrame.BackgroundTransparency = 0.08
+    toastFrame.BorderSizePixel = 0
+    toastFrame.Visible = false
+    toastFrame.ZIndex = 20
+    toastFrame.Parent = gui
+    Instance.new("UICorner", toastFrame).CornerRadius = UDim.new(0, 7)
+    local toastStroke = Instance.new("UIStroke", toastFrame)
+    toastStroke.Color = Color3.fromRGB(0, 180, 255)
+    toastStroke.Thickness = 1.5
+    local toastText = Instance.new("TextLabel")
+    toastText.Size = UDim2.new(1, -18, 1, 0)
+    toastText.Position = UDim2.fromOffset(9, 0)
+    toastText.BackgroundTransparency = 1
+    toastText.TextColor3 = Color3.fromRGB(235, 245, 255)
+    toastText.Font = Enum.Font.GothamSemibold
+    toastText.TextSize = 11
+    toastText.TextWrapped = true
+    toastText.ZIndex = 21
+    toastText.Parent = toastFrame
+    local toastSequence = 0
+
+    local function showToast(kind, message)
+        if not hubSettings.toastNotifications then return end
+        toastSequence = toastSequence + 1
+        local thisToast = toastSequence
+        toastText.Text = tostring(message)
+        toastStroke.Color = kind == "JOIN" and Color3.fromRGB(55, 200, 120)
+            or (kind == "LEAVE" and Color3.fromRGB(235, 90, 95) or Color3.fromRGB(0, 180, 255))
+        toastFrame.Visible = true
+        toastFrame.BackgroundTransparency = 0.08
+        toastFrame.Position = UDim2.new(0.5, -160, 0, 44)
+        TweenService:Create(toastFrame, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Position = UDim2.new(0.5, -160, 0, 54)
+        }):Play()
+        task.delay(hubSettings.toastDuration, function()
+            if thisToast == toastSequence and toastFrame and toastFrame.Parent then
+                local hideTween = TweenService:Create(toastFrame, TweenInfo.new(0.2), {
+                    BackgroundTransparency = 1,
+                    Position = UDim2.new(0.5, -160, 0, 44)
+                })
+                hideTween:Play()
+                hideTween.Completed:Wait()
+                if thisToast == toastSequence then toastFrame.Visible = false end
+            end
+        end)
+    end
+
+    local function addNotification(kind, message)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -4, 0, 38)
+        row.BackgroundColor3 = Color3.fromRGB(24, 29, 42)
+        row.BorderSizePixel = 0
+        row.Parent = notificationList
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
+        local accent = Instance.new("Frame")
+        accent.Size = UDim2.new(0, 3, 1, -8)
+        accent.Position = UDim2.fromOffset(5, 4)
+        accent.BackgroundColor3 = kind == "JOIN" and Color3.fromRGB(55, 200, 120)
+            or (kind == "LEAVE" and Color3.fromRGB(235, 90, 95) or Color3.fromRGB(0, 180, 255))
+        accent.BorderSizePixel = 0
+        accent.Parent = row
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -18, 1, 0)
+        label.Position = UDim2.fromOffset(13, 0)
+        label.BackgroundTransparency = 1
+        label.Text = string.format("[%s] %s", os.date("%H:%M:%S"), tostring(message))
+        label.TextColor3 = Color3.fromRGB(220, 230, 245)
+        label.Font = Enum.Font.Gotham
+        label.TextSize = 10
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextTruncate = Enum.TextTruncate.AtEnd
+        label.Parent = row
+        table.insert(notificationRows, row)
+        if #notificationRows > MAX_NOTIFICATION_ROWS then
+            local old = table.remove(notificationRows, 1)
+            if old then old:Destroy() end
+        end
+        task.defer(function()
+            if notificationList.Parent then
+                notificationList.CanvasPosition = Vector2.new(0, math.max(0, notificationLayout.AbsoluteContentSize.Y - notificationList.AbsoluteSize.Y))
+            end
+        end)
+        showToast(kind, message)
+    end
+
+    clearNotificationsBtn.MouseButton1Click:Connect(function()
+        for _, row in ipairs(notificationRows) do
+            if row and row.Parent then row:Destroy() end
+        end
+        table.clear(notificationRows)
+    end)
+
+    -- Performance monitor: one lightweight frame counter, refreshed at a configurable interval.
+    makeSectionLabel(performanceTab, "LIVE PERFORMANCE MONITOR", 2, 26)
+    local fpsLabel = makeValueLabel(performanceTab, "FPS: measuring...", 34)
+    local pingLabel = makeValueLabel(performanceTab, "Ping: measuring...", 68)
+    local memoryLabel = makeValueLabel(performanceTab, "Memory: measuring...", 102)
+    local playersLabel = makeValueLabel(performanceTab, "Players: 0", 136)
+    local sessionAgeLabel = makeValueLabel(performanceTab, "Session duration: 00:00:00", 170)
+    local performanceNote = makeValueLabel(performanceTab, "Metrics are approximate and update periodically.", 210, 42)
+    performanceNote.TextWrapped = true
+
+    local frameCount = 0
+    local lastFrameSample = os.clock()
+    local sessionStartedAt = os.clock()
+    addConnection(RunService.RenderStepped:Connect(function()
+        frameCount = frameCount + 1
+    end))
+
+    local lastPerformanceUpdate = 0
+    addConnection(RunService.Heartbeat:Connect(function()
+        local now = os.clock()
+        if now - lastPerformanceUpdate < hubSettings.performanceInterval then return end
+        lastPerformanceUpdate = now
+        local elapsed = math.max(now - lastFrameSample, 0.001)
+        local fps = math.floor(frameCount / elapsed + 0.5)
+        frameCount = 0
+        lastFrameSample = now
+        fpsLabel.Text = "FPS: " .. tostring(fps)
+        local pingOk, pingSeconds = pcall(function() return LocalPlayer:GetNetworkPing() end)
+        pingLabel.Text = pingOk and ("Ping: " .. tostring(math.floor(pingSeconds * 1000 + 0.5)) .. " ms") or "Ping: unavailable"
+        local memoryOk, memoryMb = pcall(function() return game:GetService("Stats"):GetTotalMemoryUsageMb() end)
+        memoryLabel.Text = memoryOk and ("Memory: " .. string.format("%.1f MB", memoryMb)) or "Memory: unavailable"
+        playersLabel.Text = string.format("Players: %d / %d", #Players:GetPlayers(), Players.MaxPlayers)
+        local seconds = math.floor(now - sessionStartedAt)
+        local hours = math.floor(seconds / 3600)
+        local minutes = math.floor((seconds % 3600) / 60)
+        local remaining = seconds % 60
+        sessionAgeLabel.Text = string.format("Session duration: %02d:%02d:%02d", hours, minutes, remaining)
+    end))
+
+    -- Settings are additive: no existing tab styling or controls are replaced.
+    makeSectionLabel(settingsTab, "PREFERENCES & CONFIGURATION", 2, 26)
+    local joinSettingBtn = createContentButton(settingsTab, "Join notifications: ON", UDim2.new(1, -4, 0, 34), UDim2.fromOffset(2, 36))
+    local leaveSettingBtn = createContentButton(settingsTab, "Leave notifications: ON", UDim2.new(1, -4, 0, 34), UDim2.fromOffset(2, 78))
+    local characterSettingBtn = createContentButton(settingsTab, "Respawn notifications: ON", UDim2.new(1, -4, 0, 34), UDim2.fromOffset(2, 120))
+    local toastSettingBtn = createContentButton(settingsTab, "Toast notifications: ON", UDim2.new(1, -4, 0, 34), UDim2.fromOffset(2, 162))
+    local toastDurationBtn = createContentButton(settingsTab, "Toast duration: 3 seconds", UDim2.new(1, -4, 0, 34), UDim2.fromOffset(2, 204))
+    local intervalSettingBtn = createContentButton(settingsTab, "Performance refresh: 1 second", UDim2.new(1, -4, 0, 34), UDim2.fromOffset(2, 246))
+    local saveSettingsBtn = createContentButton(settingsTab, "Save Settings", UDim2.new(0.5, -4, 0, 34), UDim2.fromOffset(2, 294), Color3.fromRGB(35, 75, 130))
+    local resetSettingsBtn = createContentButton(settingsTab, "Reset Defaults", UDim2.new(0.5, -4, 0, 34), UDim2.new(0.5, 2, 0, 294), Color3.fromRGB(130, 45, 55))
+    local settingsStatus = makeValueLabel(settingsTab, "Settings apply immediately. Save requires supported file APIs.", 338, 42)
+    settingsStatus.TextWrapped = true
+
+    local function refreshSettingsUI()
+        joinSettingBtn.Text = "Join notifications: " .. (hubSettings.joinNotifications and "ON" or "OFF")
+        leaveSettingBtn.Text = "Leave notifications: " .. (hubSettings.leaveNotifications and "ON" or "OFF")
+        characterSettingBtn.Text = "Respawn notifications: " .. (hubSettings.characterNotifications and "ON" or "OFF")
+        toastSettingBtn.Text = "Toast notifications: " .. (hubSettings.toastNotifications and "ON" or "OFF")
+        toastDurationBtn.Text = "Toast duration: " .. tostring(hubSettings.toastDuration) .. " seconds"
+        intervalSettingBtn.Text = "Performance refresh: " .. tostring(hubSettings.performanceInterval) .. " second(s)"
+    end
+
+    joinSettingBtn.MouseButton1Click:Connect(function()
+        hubSettings.joinNotifications = not hubSettings.joinNotifications
+        refreshSettingsUI()
+    end)
+    leaveSettingBtn.MouseButton1Click:Connect(function()
+        hubSettings.leaveNotifications = not hubSettings.leaveNotifications
+        refreshSettingsUI()
+    end)
+    characterSettingBtn.MouseButton1Click:Connect(function()
+        hubSettings.characterNotifications = not hubSettings.characterNotifications
+        refreshSettingsUI()
+    end)
+    toastSettingBtn.MouseButton1Click:Connect(function()
+        hubSettings.toastNotifications = not hubSettings.toastNotifications
+        if not hubSettings.toastNotifications then toastFrame.Visible = false end
+        refreshSettingsUI()
+    end)
+    toastDurationBtn.MouseButton1Click:Connect(function()
+        hubSettings.toastDuration = ({[3] = 5, [5] = 8, [8] = 3})[hubSettings.toastDuration] or 3
+        refreshSettingsUI()
+    end)
+    intervalSettingBtn.MouseButton1Click:Connect(function()
+        local nextInterval = ({[1] = 2, [2] = 5, [5] = 1})[hubSettings.performanceInterval] or 1
+        hubSettings.performanceInterval = nextInterval
+        refreshSettingsUI()
+    end)
+    saveSettingsBtn.MouseButton1Click:Connect(function()
+        if saveHubSettings() then
+            settingsStatus.Text = "Settings saved to " .. CONFIG_FILE
+        else
+            settingsStatus.Text = "File APIs unavailable. Settings remain active for this session."
+        end
+    end)
+    resetSettingsBtn.MouseButton1Click:Connect(function()
+        hubSettings.joinNotifications = true
+        hubSettings.leaveNotifications = true
+        hubSettings.characterNotifications = true
+        hubSettings.toastNotifications = true
+        hubSettings.toastDuration = 3
+        hubSettings.performanceInterval = 1
+        refreshSettingsUI()
+        if saveHubSettings() then
+            settingsStatus.Text = "Default settings restored and saved."
+        else
+            settingsStatus.Text = "Default settings restored for this session; file APIs unavailable."
+        end
+    end)
+    refreshSettingsUI()
+
+    -- Centralized event wiring for the new modules. All connections join the existing cleanup list.
+    addConnection(Players.PlayerAdded:Connect(function(player)
+        if hubSettings.joinNotifications then
+            addNotification("JOIN", player.DisplayName .. " ( @" .. player.Name .. " ) joined the server")
+        end
+    end))
+    addConnection(Players.PlayerRemoving:Connect(function(player)
+        if hubSettings.leaveNotifications then
+            addNotification("LEAVE", player.DisplayName .. " ( @" .. player.Name .. " ) left the server")
+        end
+    end))
+    addConnection(LocalPlayer.CharacterAdded:Connect(function()
+        if hubSettings.characterNotifications then
+            addNotification("INFO", "Your character respawned")
+        end
+    end))
+
+    addNotification("INFO", "Notification center initialized")
+    addNotification("INFO", "Performance monitor initialized")
+end
+
+--========================================================
 -- GLOBAL DESTROY / KILLSWITCH FUNCTION [KEYBIND P]
 --========================================================
 destroyAll = function()
-    if cleanupSubmerge then
-        pcall(cleanupSubmerge)
-    end
-    for _, conn in ipairs(activeConnections) do
-        if conn and typeof(conn) == "RBXScriptConnection" then
-            pcall(function() conn:Disconnect() end)
+    if cleanupComplete or shuttingDown then return end
+    shuttingDown = true
+    refreshCharacterGeneration = refreshCharacterGeneration + 1
+    refreshingCharacter = false
+
+    -- Stop module-specific systems before disconnecting shared event connections.
+    if cleanupSubmerge then pcall(cleanupSubmerge) end
+
+    for index = #cleanupCallbacks, 1, -1 do
+        local callback = cleanupCallbacks[index]
+        if type(callback) == "function" then
+            local ok, err = pcall(callback)
+            if not ok then warn("[TheUnionHub] Cleanup callback failed: " .. tostring(err)) end
         end
     end
-    pcall(function()
-        for _, obj in ipairs(Lighting:GetChildren()) do
-            if obj.Name:find("Hub") or obj.Name:find("RTX") or obj.Name:find("CustomSky") then
-                obj:Destroy()
+    table.clear(cleanupCallbacks)
+
+    -- Run ESP cleanup after friend callbacks so no callback can recreate ESP objects.
+    if cleanupPlayerESP then pcall(cleanupPlayerESP) end
+
+    for index = #activeConnections, 1, -1 do
+        disconnectConnection(activeConnections[index])
+        activeConnections[index] = nil
+    end
+
+    -- Restore the Lighting properties captured before this hub started.
+    for property, value in pairs(originalLightingState) do
+        if property ~= "Sky" then
+            pcall(function() Lighting[property] = value end)
+        end
+    end
+
+    -- Remove only ESP instances owned by this hub; do not delete unrelated highlights.
+    for _, player in ipairs(Players:GetPlayers()) do
+        local character = player.Character
+        if character then
+            for _, child in ipairs(character:GetChildren()) do
+                if child:GetAttribute("TheUnionHubOwned") == true then
+                    pcall(function() child:Destroy() end)
+                end
             end
         end
-    end)
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character then
-            local hl = p.Character:FindFirstChild("ESPHighlight")
-            local fhl = p.Character:FindFirstChild("FriendHighlight")
-            if hl then hl:Destroy() end
-            if fhl then fhl:Destroy() end
-        end
     end
-    if gui then
-        gui:Destroy()
-    end
+
+    cleanupComplete = true
+    if gui and gui.Parent then pcall(function() gui:Destroy() end) end
 end
 
 --========================================================
@@ -571,85 +1206,215 @@ do
         if input.KeyCode == Enum.KeyCode.L then toggleBrightness() end
     end))
 
-    -- 2. Player ESPlocal espEnabled = true
+    -- 2. Player ESP 2.0
+    -- One shared ESP object per player; Friend ESP reuses this manager.
+    local espEnabled = true
+    local espNamesEnabled = true
+    local espHighlightsEnabled = true
+    local espHealthEnabled = true
+    local espDistanceEnabled = true
+    local espMaxDistance = 500
     local espObjects = {}
+    local friendESPFlags = {}
+    local ESP_UPDATE_INTERVAL = 0.2
+
+    local PLAYER_COLOR = Color3.fromRGB(0, 200, 255)
+    local FRIEND_COLOR = Color3.fromRGB(255, 215, 0)
+
+    local function getLocalRoot()
+        local character = LocalPlayer.Character
+        return character and character:FindFirstChild("HumanoidRootPart")
+    end
 
     local function removeESP(player)
         local data = espObjects[player]
-        if data then
-            if data.Highlight then data.Highlight:Destroy() end
-            if data.Billboard then data.Billboard:Destroy() end
-            espObjects[player] = nil
+        if not data then return end
+        if data.Highlight then pcall(function() data.Highlight:Destroy() end) end
+        if data.Billboard then pcall(function() data.Billboard:Destroy() end) end
+        espObjects[player] = nil
+    end
+
+    local function isWithinRange(player, root)
+        if espMaxDistance <= 0 then return true end
+        local localRoot = getLocalRoot()
+        if not localRoot or not root then return false end
+        return (root.Position - localRoot.Position).Magnitude <= espMaxDistance
+    end
+
+    local function refreshESPStyle(player)
+        local data = espObjects[player]
+        if not data then return end
+        local isFriend = friendESPFlags[player] == true
+        local isTeammate = player.Team ~= nil and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team
+        local color = isFriend and FRIEND_COLOR or (isTeammate and player.Team.TeamColor.Color or PLAYER_COLOR)
+        if data.Highlight then
+            data.Highlight.FillColor = color
+            data.Highlight.OutlineColor = isFriend and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(220, 245, 255)
+            data.Highlight.Enabled = espHighlightsEnabled and (espEnabled or isFriend)
+        end
+        if data.Billboard then
+            data.Billboard.Enabled = (espNamesEnabled or espHealthEnabled or espDistanceEnabled) and (espEnabled or isFriend)
+        end
+        if data.Label then
+            data.Label.TextColor3 = color
         end
     end
 
     local function createESP(player)
-        if player == LocalPlayer then return end
+        if player == LocalPlayer or not player.Parent then return end
+        local character = player.Character
+        if not character then return end
+        local root = character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not root or not humanoid then return end
+
+        local existing = espObjects[player]
+        if existing and existing.Character == character then
+            existing.Root = root
+            existing.Humanoid = humanoid
+            refreshESPStyle(player)
+            return
+        end
         removeESP(player)
-        local char = player.Character
-        if not char then return end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if not root then return end
 
         local highlight = Instance.new("Highlight")
         highlight.Name = "ESPHighlight"
-        highlight.Adornee = char
-        highlight.FillColor = Color3.fromRGB(0, 200, 255)
-        highlight.OutlineColor = Color3.new(1, 1, 1)
+        highlight:SetAttribute("TheUnionHubOwned", true)
+        highlight.Adornee = character
+        highlight.FillColor = PLAYER_COLOR
+        highlight.OutlineColor = Color3.fromRGB(220, 245, 255)
         highlight.FillTransparency = 0.65
         highlight.OutlineTransparency = 0
         highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        highlight.Enabled = espEnabled
-        highlight.Parent = char
+        highlight.Enabled = false
+        highlight.Parent = character
 
         local billboard = Instance.new("BillboardGui")
         billboard.Name = "ESPName"
+        billboard:SetAttribute("TheUnionHubOwned", true)
         billboard.Adornee = root
-        billboard.Size = UDim2.fromOffset(200, 30)
+        billboard.Size = UDim2.fromOffset(220, 54)
         billboard.StudsOffset = Vector3.new(0, 3.2, 0)
         billboard.AlwaysOnTop = true
-        billboard.Enabled = espEnabled
+        billboard.Enabled = false
         billboard.Parent = PlayerGui
 
         local label = Instance.new("TextLabel")
+        label.Name = "ESPInfo"
         label.Size = UDim2.fromScale(1, 1)
         label.BackgroundTransparency = 1
         label.Text = player.DisplayName .. " (@" .. player.Name .. ")"
-        label.TextColor3 = Color3.fromRGB(255, 255, 255)
+        label.TextColor3 = PLAYER_COLOR
         label.TextStrokeTransparency = 0.2
-        label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        label.TextSize = 13
+        label.TextStrokeColor3 = Color3.new(0, 0, 0)
+        label.TextSize = 12
         label.Font = Enum.Font.GothamBold
+        label.TextWrapped = true
         label.Parent = billboard
 
-        espObjects[player] = { Highlight = highlight, Billboard = billboard }
+        espObjects[player] = {
+            Character = character,
+            Root = root,
+            Humanoid = humanoid,
+            Highlight = highlight,
+            Billboard = billboard,
+            Label = label,
+        }
+        refreshESPStyle(player)
+    end
+
+    local function updateESPDisplay(player, data)
+        local character = player.Character
+        if not character or character ~= data.Character or not data.Root or not data.Root.Parent then
+            removeESP(player)
+            if (espEnabled or friendESPFlags[player]) and player.Character then
+                createESP(player)
+            end
+            return
+        end
+
+        local active = espEnabled or friendESPFlags[player] == true
+        local inRange = isWithinRange(player, data.Root)
+        if not active or not inRange then
+            if data.Highlight then data.Highlight.Enabled = false end
+            if data.Billboard then data.Billboard.Enabled = false end
+            return
+        end
+
+        refreshESPStyle(player)
+        local parts = {}
+        if espNamesEnabled then
+            table.insert(parts, player.DisplayName .. " (@" .. player.Name .. ")")
+        end
+        if espHealthEnabled then
+            local humanoid = data.Humanoid
+            if humanoid and humanoid.Parent then
+                local health = math.max(0, math.floor(humanoid.Health + 0.5))
+                local maxHealth = math.max(1, math.floor(humanoid.MaxHealth + 0.5))
+                table.insert(parts, "HP: " .. health .. "/" .. maxHealth)
+            end
+        end
+        if espDistanceEnabled then
+            local localRoot = getLocalRoot()
+            if localRoot then
+                local distance = math.floor((data.Root.Position - localRoot.Position).Magnitude + 0.5)
+                table.insert(parts, tostring(distance) .. " studs")
+            end
+        end
+        data.Label.Text = table.concat(parts, "\n")
+        data.Billboard.Enabled = #parts > 0
+    end
+
+    local function setESPEnabled(enabled)
+        espEnabled = enabled
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                if espEnabled or friendESPFlags[player] then
+                    createESP(player)
+                else
+                    removeESP(player)
+                end
+            end
+        end
+    end
+
+    playerESPManager.SetFriend = function(player, enabled)
+        friendESPFlags[player] = enabled == true and true or nil
+        if espEnabled or friendESPFlags[player] then
+            createESP(player)
+        elseif not friendESPFlags[player] then
+            removeESP(player)
+        end
+        refreshESPStyle(player)
+    end
+    playerESPManager.Refresh = function(player)
+        if player and player ~= LocalPlayer then
+            if espEnabled or friendESPFlags[player] then createESP(player) end
+        end
     end
 
     local toggleEspBtn, espStroke = createContentButton(mainScroll, "Player ESP: ON [R]", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(35, 140, 85))
     TweenService:Create(espStroke, TweenInfo.new(0.01), {Color = Color3.fromRGB(60, 200, 120)}):Play()
 
+    local function styleEspToggle(button, stroke, enabled, label)
+        button.Text = label .. (enabled and ": ON" or ": OFF")
+        TweenService:Create(button, TweenInfo.new(0.15), {
+            BackgroundColor3 = enabled and Color3.fromRGB(35, 140, 85) or Color3.fromRGB(28, 33, 46)
+        }):Play()
+        TweenService:Create(stroke, TweenInfo.new(0.15), {
+            Color = enabled and Color3.fromRGB(60, 200, 120) or Color3.fromRGB(45, 55, 80)
+        }):Play()
+    end
+
     local function toggleESP()
-        espEnabled = not espEnabled
-        if espEnabled then
-            toggleEspBtn.Text = "Player ESP: ON [R]"
-            TweenService:Create(toggleEspBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
-            TweenService:Create(espStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
-        else
-            toggleEspBtn.Text = "Player ESP: OFF [R]"
-            TweenService:Create(toggleEspBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
-            TweenService:Create(espStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(45, 55, 80)}):Play()
-        end
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer then
-                local data = espObjects[p]
-                if data then
-                    data.Highlight.Enabled = espEnabled
-                    data.Billboard.Enabled = espEnabled
-                elseif espEnabled then
-                    createESP(p)
-                end
-            end
-        end
+        setESPEnabled(not espEnabled)
+        toggleEspBtn.Text = "Player ESP: " .. (espEnabled and "ON [R]" or "OFF [R]")
+        TweenService:Create(toggleEspBtn, TweenInfo.new(0.2), {
+            BackgroundColor3 = espEnabled and Color3.fromRGB(35, 140, 85) or Color3.fromRGB(28, 33, 46)
+        }):Play()
+        TweenService:Create(espStroke, TweenInfo.new(0.2), {
+            Color = espEnabled and Color3.fromRGB(60, 200, 120) or Color3.fromRGB(45, 55, 80)
+        }):Play()
     end
     toggleEspBtn.MouseButton1Click:Connect(toggleESP)
     addConnection(UserInputService.InputBegan:Connect(function(input, processed)
@@ -657,33 +1422,140 @@ do
         if input.KeyCode == Enum.KeyCode.R then toggleESP() end
     end))
 
-    local function onCharacterAdded(p)
-        task.wait(1)
-        if espEnabled then createESP(p) end
-    end
+    -- Optional controls are added inside the existing Main tab; no tab or layout redesign.
+    local espOptionsHeader = Instance.new("TextLabel")
+    espOptionsHeader.Size = UDim2.new(1, -8, 0, 20)
+    espOptionsHeader.BackgroundTransparency = 1
+    espOptionsHeader.Text = "PLAYER ESP OPTIONS"
+    espOptionsHeader.TextColor3 = Color3.fromRGB(0, 200, 255)
+    espOptionsHeader.Font = Enum.Font.GothamBold
+    espOptionsHeader.TextSize = 10
+    espOptionsHeader.TextXAlignment = Enum.TextXAlignment.Left
+    espOptionsHeader.Parent = mainScroll
 
-    addConnection(Players.PlayerRemoving:Connect(removeESP))
-
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            addConnection(p.CharacterAdded:Connect(function()
-                onCharacterAdded(p)
-            end))
-            if p.Character then
-                task.spawn(function()
-                    if espEnabled then createESP(p) end
-                end)
+    local function addEspOption(text, initial, callback)
+        local button, stroke = createContentButton(mainScroll, text .. (initial and ": ON" or ": OFF"), UDim2.new(1, -6, 0, 30), UDim2.new(), initial and Color3.fromRGB(35, 100, 75) or Color3.fromRGB(28, 33, 46))
+        styleEspToggle(button, stroke, initial, text)
+        button.MouseButton1Click:Connect(function()
+            local enabled = callback()
+            styleEspToggle(button, stroke, enabled, text)
+            for player, data in pairs(espObjects) do
+                updateESPDisplay(player, data)
             end
+        end)
+        return button
+    end
+
+    addEspOption("ESP Highlights", espHighlightsEnabled, function()
+        espHighlightsEnabled = not espHighlightsEnabled
+        return espHighlightsEnabled
+    end)
+    addEspOption("ESP Names", espNamesEnabled, function()
+        espNamesEnabled = not espNamesEnabled
+        return espNamesEnabled
+    end)
+    addEspOption("ESP Health", espHealthEnabled, function()
+        espHealthEnabled = not espHealthEnabled
+        return espHealthEnabled
+    end)
+    addEspOption("ESP Distance", espDistanceEnabled, function()
+        espDistanceEnabled = not espDistanceEnabled
+        return espDistanceEnabled
+    end)
+
+    local rangeRow = Instance.new("Frame")
+    rangeRow.Size = UDim2.new(1, -6, 0, 34)
+    rangeRow.BackgroundTransparency = 1
+    rangeRow.Parent = mainScroll
+    local rangeInput = Instance.new("TextBox")
+    rangeInput.Size = UDim2.new(0.58, -4, 1, 0)
+    rangeInput.BackgroundColor3 = Color3.fromRGB(24, 28, 40)
+    rangeInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+    rangeInput.PlaceholderColor3 = Color3.fromRGB(145, 155, 175)
+    rangeInput.PlaceholderText = "Max range (0 = unlimited)"
+    rangeInput.Text = tostring(espMaxDistance)
+    rangeInput.ClearTextOnFocus = false
+    rangeInput.Font = Enum.Font.Gotham
+    rangeInput.TextSize = 11
+    rangeInput.BorderSizePixel = 0
+    rangeInput.Parent = rangeRow
+    Instance.new("UICorner", rangeInput).CornerRadius = UDim.new(0, 6)
+    local applyRangeBtn = Instance.new("TextButton")
+    applyRangeBtn.Size = UDim2.new(0.42, -2, 1, 0)
+    applyRangeBtn.Position = UDim2.new(0.58, 4, 0, 0)
+    applyRangeBtn.BackgroundColor3 = Color3.fromRGB(35, 75, 130)
+    applyRangeBtn.TextColor3 = Color3.new(1, 1, 1)
+    applyRangeBtn.Text = "Apply Range"
+    applyRangeBtn.Font = Enum.Font.GothamBold
+    applyRangeBtn.TextSize = 11
+    applyRangeBtn.BorderSizePixel = 0
+    applyRangeBtn.Parent = rangeRow
+    Instance.new("UICorner", applyRangeBtn).CornerRadius = UDim.new(0, 6)
+    local rangeStatus = Instance.new("TextLabel")
+    rangeStatus.Size = UDim2.new(1, -6, 0, 18)
+    rangeStatus.BackgroundTransparency = 1
+    rangeStatus.Text = "Range: 500 studs"
+    rangeStatus.TextColor3 = Color3.fromRGB(145, 165, 185)
+    rangeStatus.Font = Enum.Font.Gotham
+    rangeStatus.TextSize = 10
+    rangeStatus.TextXAlignment = Enum.TextXAlignment.Left
+    rangeStatus.Parent = mainScroll
+    applyRangeBtn.MouseButton1Click:Connect(function()
+        local value = tonumber(rangeInput.Text)
+        if not value or value < 0 or value > 100000 then
+            rangeStatus.Text = "Enter a number from 0 to 100000"
+            rangeStatus.TextColor3 = Color3.fromRGB(255, 110, 110)
+            return
+        end
+        espMaxDistance = math.floor(value)
+        rangeStatus.Text = espMaxDistance == 0 and "Range: Unlimited" or ("Range: " .. espMaxDistance .. " studs")
+        rangeStatus.TextColor3 = Color3.fromRGB(145, 165, 185)
+    end)
+
+    local function connectPlayer(player)
+        if player == LocalPlayer then return end
+        addConnection(player.CharacterAdded:Connect(function(character)
+            task.spawn(function()
+                local root = character:WaitForChild("HumanoidRootPart", 8)
+                local humanoid = character:WaitForChild("Humanoid", 8)
+                if root and humanoid and player.Parent and (espEnabled or friendESPFlags[player]) then
+                    createESP(player)
+                end
+            end)
+        end))
+        addConnection(player.CharacterRemoving:Connect(function()
+            removeESP(player)
+        end))
+        if player.Character and (espEnabled or friendESPFlags[player]) then
+            task.spawn(function() createESP(player) end)
         end
     end
 
-    addConnection(Players.PlayerAdded:Connect(function(p)
-        if p ~= LocalPlayer then
-            addConnection(p.CharacterAdded:Connect(function()
-                onCharacterAdded(p)
-            end))
-        end
+    addConnection(Players.PlayerRemoving:Connect(function(player)
+        removeESP(player)
+        friendESPFlags[player] = nil
     end))
+    for _, player in ipairs(Players:GetPlayers()) do connectPlayer(player) end
+    addConnection(Players.PlayerAdded:Connect(connectPlayer))
+
+    local espLoopActive = true
+    cleanupPlayerESP = function()
+        espLoopActive = false
+        for player in pairs(espObjects) do removeESP(player) end
+        table.clear(friendESPFlags)
+    end
+    task.spawn(function()
+        while espLoopActive and gui and gui.Parent do
+            for player, data in pairs(espObjects) do
+                if player.Parent then
+                    updateESPDisplay(player, data)
+                else
+                    removeESP(player)
+                end
+            end
+            task.wait(ESP_UPDATE_INTERVAL)
+        end
+    end)
 
     -- 3. Movement (Fly & Noclip)
     local flying = false
@@ -695,6 +1567,8 @@ do
         Fast = 121381683064391 -- fast movement / run
     }
     local bodyGyro, bodyVelocity
+    local flyHumanoid = nil
+    local flyOriginalPlatformStand = nil
     local flyTracks = {}
     local currentFlyState = nil
     local flyBtn, flyStroke = createContentButton(mainScroll, "Fly: OFF [F]", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(28, 33, 46))
@@ -783,6 +1657,8 @@ do
 
         flying = not flying
         if flying then
+            flyHumanoid = hum
+            flyOriginalPlatformStand = hum.PlatformStand
             loadFlyAnimations(hum)
             hum.PlatformStand = true
             bodyGyro = Instance.new("BodyGyro")
@@ -827,7 +1703,12 @@ do
             TweenService:Create(flyBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
             TweenService:Create(flyStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
         else
-            hum.PlatformStand = false
+            local restoreHumanoid = flyHumanoid or hum
+            if restoreHumanoid and restoreHumanoid.Parent then
+                restoreHumanoid.PlatformStand = flyOriginalPlatformStand == true
+            end
+            flyHumanoid = nil
+            flyOriginalPlatformStand = nil
             if bodyGyro then bodyGyro:Destroy() bodyGyro = nil end
             if bodyVelocity then bodyVelocity:Destroy() bodyVelocity = nil end
             stopFlyAnimations()
@@ -840,6 +1721,18 @@ do
 
     local noclip = false
     local noclipConn
+    local noclipOriginalCollision = {}
+    local noclipCharacter = nil
+
+    local function restoreNoclipCollision()
+        for part, originalValue in pairs(noclipOriginalCollision) do
+            if part and part.Parent then
+                pcall(function() part.CanCollide = originalValue end)
+            end
+        end
+        table.clear(noclipOriginalCollision)
+        noclipCharacter = nil
+    end
     local noclipBtn, noclipStroke = createContentButton(mainScroll, "Noclip: OFF [N]", UDim2.new(1, -6, 0, 38), UDim2.new(), Color3.fromRGB(28, 33, 46))
 
     local function toggleNoclip()
@@ -849,9 +1742,19 @@ do
             TweenService:Create(noclipBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(35, 140, 85)}):Play()
             TweenService:Create(noclipStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(60, 200, 120)}):Play()
             noclipConn = addConnection(RunService.Stepped:Connect(function()
-                if noclip and LocalPlayer.Character then
-                    for _, v in ipairs(LocalPlayer.Character:GetDescendants()) do
-                        if v:IsA("BasePart") then v.CanCollide = false end
+                if not noclip then return end
+                local character = LocalPlayer.Character
+                if not character then return end
+                if noclipCharacter ~= character then
+                    restoreNoclipCollision()
+                    noclipCharacter = character
+                end
+                for _, part in ipairs(character:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        if noclipOriginalCollision[part] == nil then
+                            noclipOriginalCollision[part] = part.CanCollide
+                        end
+                        part.CanCollide = false
                     end
                 end
             end))
@@ -860,6 +1763,7 @@ do
             TweenService:Create(noclipBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 33, 46)}):Play()
             TweenService:Create(noclipStroke, TweenInfo.new(0.2), {Color = Color3.fromRGB(45, 55, 80)}):Play()
             if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+            restoreNoclipCollision()
         end
     end
     noclipBtn.MouseButton1Click:Connect(toggleNoclip)
@@ -952,6 +1856,59 @@ do
         setToggleStyle(antiAFKBtn, antiAFKStroke, antiAFKEnabled, "Anti-AFK")
     end
     antiAFKBtn.MouseButton1Click:Connect(toggleAntiAFK)
+
+    addConnection(LocalPlayer.CharacterAdded:Connect(function()
+        if flying then
+            flying = false
+            if flyHumanoid and flyHumanoid.Parent then
+                pcall(function() flyHumanoid.PlatformStand = flyOriginalPlatformStand == true end)
+            end
+            flyHumanoid = nil
+            flyOriginalPlatformStand = nil
+            if bodyGyro then pcall(function() bodyGyro:Destroy() end) bodyGyro = nil end
+            if bodyVelocity then pcall(function() bodyVelocity:Destroy() end) bodyVelocity = nil end
+            stopFlyAnimations()
+            if flyBtn and flyBtn.Parent then flyBtn.Text = "Fly: OFF [F]" end
+        end
+        if noclip then
+            noclip = false
+            disconnectConnection(noclipConn)
+            noclipConn = nil
+            restoreNoclipCollision()
+            if noclipBtn and noclipBtn.Parent then noclipBtn.Text = "Noclip: OFF [N]" end
+        end
+    end))
+
+    registerCleanup(function()
+        if flying then
+            flying = false
+            local restoreHumanoid = flyHumanoid or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid"))
+            if restoreHumanoid and restoreHumanoid.Parent then
+                pcall(function() restoreHumanoid.PlatformStand = flyOriginalPlatformStand == true end)
+            end
+        end
+        flyHumanoid = nil
+        flyOriginalPlatformStand = nil
+        if bodyGyro then pcall(function() bodyGyro:Destroy() end) bodyGyro = nil end
+        if bodyVelocity then pcall(function() bodyVelocity:Destroy() end) bodyVelocity = nil end
+        stopFlyAnimations()
+        noclip = false
+        disconnectConnection(noclipConn)
+        noclipConn = nil
+        restoreNoclipCollision()
+        antiFlingEnabled = false
+        disconnectConnection(antiFlingConn)
+        antiFlingConn = nil
+        antiAFKEnabled = false
+        disconnectConnection(antiAFKConn)
+        antiAFKConn = nil
+        if brightEnabled then
+            brightEnabled = false
+            for prop, value in pairs(originalLighting) do
+                pcall(function() Lighting[prop] = value end)
+            end
+        end
+    end)
 end
 
 --========================================================
@@ -993,53 +1950,21 @@ do
     local tpFriendBtn = createContentButton(friendsTab, "Teleport to Friend", UDim2.new(0.5, -3, 0, 36), UDim2.new(0.5, 3, 1, -38), Color3.fromRGB(35, 75, 130))
 
     local function removeFriendESP(player)
-        local data = friendEspObjects[player]
-        if data then
-            if data.Highlight then data.Highlight:Destroy() end
-            if data.Billboard then data.Billboard:Destroy() end
-            friendEspObjects[player] = nil
+        friendEspObjects[player] = nil
+        if playerESPManager.SetFriend then
+            playerESPManager.SetFriend(player, false)
         end
     end
 
     local function createFriendESP(player)
-        removeFriendESP(player)
-        if not friendEspEnabled then return end
-        local char = player.Character
-        if not char then return end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-
-        local highlight = Instance.new("Highlight")
-        highlight.Name = "FriendHighlight"
-        highlight.Adornee = char
-        highlight.FillColor = Color3.fromRGB(255, 215, 0)
-        highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
-        highlight.FillTransparency = 0.4
-        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        highlight.Enabled = friendEspEnabled
-        highlight.Parent = char
-
-        local billboard = Instance.new("BillboardGui")
-        billboard.Name = "FriendESPName"
-        billboard.Adornee = root
-        billboard.Size = UDim2.fromOffset(200, 30)
-        billboard.StudsOffset = Vector3.new(0, 3.2, 0)
-        billboard.AlwaysOnTop = true
-        billboard.Enabled = friendEspEnabled
-        billboard.Parent = PlayerGui
-
-        local label = Instance.new("TextLabel")
-        label.Size = UDim2.fromScale(1, 1)
-        label.BackgroundTransparency = 1
-        label.Text = "⭐ [FRIEND] " .. player.DisplayName
-        label.TextColor3 = Color3.fromRGB(255, 225, 100)
-        label.TextStrokeTransparency = 0.2
-        label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        label.TextSize = 13
-        label.Font = Enum.Font.GothamBold
-        label.Parent = billboard
-
-        friendEspObjects[player] = { Highlight = highlight, Billboard = billboard }
+        if not friendEspEnabled then
+            removeFriendESP(player)
+            return
+        end
+        friendEspObjects[player] = true
+        if playerESPManager.SetFriend then
+            playerESPManager.SetFriend(player, true)
+        end
     end
 
     local function playFriendJoinSound()
@@ -1169,7 +2094,16 @@ do
     end))
 
     addConnection(Players.PlayerRemoving:Connect(function(p)
-        if p == selectedFriend then selectedFriend = nil end
+        if p == selectedFriend then
+            selectedFriend = nil
+            if friendSpectating then
+                friendSpectating = false
+                local camera = Workspace.CurrentCamera
+                local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                if camera and humanoid then pcall(function() camera.CameraSubject = humanoid end) end
+                specFriendBtn.Text = "Spectate Friend"
+            end
+        end
         removeFriendESP(p)
         refreshFriendsList()
     end))
@@ -1180,14 +2114,27 @@ do
             task.wait(5)
         end
     end)
+    registerCleanup(function()
+        friendSpectating = false
+        selectedFriend = nil
+        for player in pairs(friendEspObjects) do
+            if playerESPManager.SetFriend then pcall(playerESPManager.SetFriend, player, false) end
+        end
+        table.clear(friendEspObjects)
+        local camera = Workspace.CurrentCamera
+        local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if camera and humanoid then pcall(function() camera.CameraSubject = humanoid end) end
+    end)
 end
 
 --========================================================
--- MODULE 2.5: SERVERS TAB (SERVER BROWSER & FRIEND DETECTOR)
+-- MODULE 2.5: SERVERS TAB (PAGINATED SERVER BROWSER)
+-- Preserves the existing tab style while adding safer paging,
+-- filtering, sorting, friend-cache handling, and teleport recovery.
 --========================================================
 do
     local serverHeaderStatus = Instance.new("TextLabel")
-    serverHeaderStatus.Size = UDim2.new(1, -100, 0, 24)
+    serverHeaderStatus.Size = UDim2.new(1, -190, 0, 24)
     serverHeaderStatus.Position = UDim2.fromOffset(0, 4)
     serverHeaderStatus.BackgroundTransparency = 1
     serverHeaderStatus.Text = "Public Server Browser"
@@ -1195,13 +2142,34 @@ do
     serverHeaderStatus.Font = Enum.Font.GothamBold
     serverHeaderStatus.TextSize = 13
     serverHeaderStatus.TextXAlignment = Enum.TextXAlignment.Left
+    serverHeaderStatus.TextTruncate = Enum.TextTruncate.AtEnd
     serverHeaderStatus.Parent = serversTab
 
     local refreshServersBtn = createContentButton(serversTab, "🔄 Refresh", UDim2.fromOffset(90, 26), UDim2.new(1, -90, 0, 3), Color3.fromRGB(35, 75, 130))
 
+    -- Compact additive controls; existing colors and overall tab dimensions remain intact.
+    local serverSearchBox = Instance.new("TextBox")
+    serverSearchBox.Size = UDim2.new(1, -190, 0, 25)
+    serverSearchBox.Position = UDim2.fromOffset(0, 35)
+    serverSearchBox.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
+    serverSearchBox.TextColor3 = Color3.fromRGB(235, 240, 250)
+    serverSearchBox.PlaceholderColor3 = Color3.fromRGB(135, 145, 160)
+    serverSearchBox.PlaceholderText = "Filter by server ID..."
+    serverSearchBox.Text = ""
+    serverSearchBox.ClearTextOnFocus = false
+    serverSearchBox.Font = Enum.Font.Gotham
+    serverSearchBox.TextSize = 10
+    serverSearchBox.BorderSizePixel = 0
+    serverSearchBox.Parent = serversTab
+    Instance.new("UICorner", serverSearchBox).CornerRadius = UDim.new(0, 5)
+
+    local sortServersBtn = createContentButton(serversTab, "Sort: Players ↓", UDim2.fromOffset(112, 25), UDim2.new(1, -112, 0, 35), Color3.fromRGB(35, 75, 130))
+    local friendsOnlyBtn = createContentButton(serversTab, "Friends: All", UDim2.fromOffset(112, 25), UDim2.new(1, -112, 0, 64), Color3.fromRGB(35, 75, 130))
+    local populationFilterBtn = createContentButton(serversTab, "Slots: Any", UDim2.fromOffset(112, 25), UDim2.fromOffset(0, 64), Color3.fromRGB(35, 75, 130))
+
     local serverListFrame = Instance.new("ScrollingFrame")
-    serverListFrame.Size = UDim2.new(1, 0, 1, -40)
-    serverListFrame.Position = UDim2.fromOffset(0, 36)
+    serverListFrame.Size = UDim2.new(1, 0, 1, -100)
+    serverListFrame.Position = UDim2.fromOffset(0, 94)
     serverListFrame.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
     serverListFrame.BorderSizePixel = 0
     serverListFrame.ScrollBarThickness = 4
@@ -1212,145 +2180,414 @@ do
 
     local serverListLayout = Instance.new("UIListLayout", serverListFrame)
     serverListLayout.Padding = UDim.new(0, 6)
+    serverListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
     local friendIds = {}
+    local friendsCacheReady = false
+    local friendsCacheError = nil
+    local serverRecords = {}
+    local seenServerIds = {}
+    local nextServerCursor = nil
+    local isFetchingServers = false
+    local fetchGeneration = 0
+    local hasMoreServers = false
+    local sortMode = 1
+    local friendsOnly = false
+    local populationMode = 1
+    local friendsCacheLoading = false
+    local activeJoinButtons = {}
+    local renderServerRows
+    local updateFriendBadge
+
     local function cacheFriends()
-        friendIds = {}
-        pcall(function()
+        if friendsCacheLoading then
+            while friendsCacheLoading do task.wait(0.1) end
+            return friendsCacheReady and friendsCacheError == nil
+        end
+        friendsCacheLoading = true
+        local freshIds = {}
+        local cacheComplete = false
+        local ok, err = pcall(function()
             local pages = Players:GetFriendsAsync(LocalPlayer.UserId)
-            while true do
+            local pageCount = 0
+            while pages and pageCount < 20 do
+                pageCount = pageCount + 1
                 for _, item in ipairs(pages:GetCurrentPage()) do
-                    friendIds[item.Id] = true
+                    local id = tonumber(item.Id)
+                    if id then freshIds[id] = true end
                 end
-                if pages.IsFinished then break end
+                if pages.IsFinished then
+                    cacheComplete = true
+                    break
+                end
                 pages:AdvanceToNextPageAsync()
             end
+            if pages and pages.IsFinished then cacheComplete = true end
         end)
-    end
-    task.spawn(cacheFriends)
-
-    local function fetchServers()
-        for _, child in ipairs(serverListFrame:GetChildren()) do
-            if child:IsA("Frame") then child:Destroy() end
+        if ok then
+            friendIds = freshIds
+            if cacheComplete then
+                friendsCacheError = nil
+            else
+                friendsCacheError = "Friend list may be incomplete (page limit reached)"
+            end
+            for _, record in ipairs(serverRecords) do
+                local count = 0
+                if type(record.data.players) == "table" then
+                    for _, playerData in ipairs(record.data.players) do
+                        local playerId = tonumber(playerData.id)
+                        if playerId and friendIds[playerId] then count = count + 1 end
+                    end
+                end
+                record.friendCount = count
+            end
+        else
+            -- Keep the last known-good friend IDs if refresh fails.
+            friendsCacheError = tostring(err)
         end
+        friendsCacheReady = true
+        friendsCacheLoading = false
+        if ok and not shuttingDown and gui and gui.Parent and #serverRecords > 0 and renderServerRows then
+            pcall(renderServerRows)
+            pcall(updateFriendBadge)
+        end
+        return ok
+    end
 
-        serverHeaderStatus.Text = "Fetching servers..."
+    local function requestServerPage(url)
+        local lastError = "Request failed"
+        for attempt = 1, 3 do
+            local response, transportError = httpRequest({Url = url, Method = "GET"})
+            if response and type(response.Body) == "string" then
+                local statusCode = tonumber(response.StatusCode or response.Status or 200)
+                local successStatus = response.Success
+                if statusCode and statusCode >= 200 and statusCode < 300 and successStatus ~= false then
+                    local decodeOk, decoded = pcall(function()
+                        return HttpService:JSONDecode(response.Body)
+                    end)
+                    if decodeOk and type(decoded) == "table" and type(decoded.data) == "table" then
+                        return decoded
+                    end
+                    lastError = "Invalid server response"
+                else
+                    lastError = "HTTP " .. tostring(statusCode or "error")
+                end
+            else
+                lastError = transportError or "No response from server API"
+            end
+            if attempt < 3 then task.wait(0.5 * (2 ^ (attempt - 1))) end
+        end
+        return nil, lastError
+    end
 
-        task.spawn(function()
-            local totalFriendsInServers = 0
-            local placeId = game.PlaceId
-            local url = "https://games.roblox.com/v1/games/" .. tostring(placeId) .. "/servers/Public?limit=50&sortOrder=Desc"
-            
-            local res = httpRequest({Url = url, Method = "GET"})
-            local bodyData = nil
+    local function clearRenderedServerRows()
+        for _, child in ipairs(serverListFrame:GetChildren()) do
+            if child:IsA("Frame") or child.Name == "LoadMoreServers" or child.Name == "ServerEmptyState" then
+                child:Destroy()
+            end
+        end
+    end
 
-            if res and res.Body then
-                pcall(function() bodyData = HttpService:JSONDecode(res.Body) end)
+    local function getFilteredSortedServers()
+        local result = {}
+        local query = string.lower(serverSearchBox.Text or "")
+        for _, record in ipairs(serverRecords) do
+            local server = record.data
+            local id = tostring(server.id or "")
+            local matchesQuery = query == "" or string.find(string.lower(id), query, 1, true) ~= nil
+            local matchesFriends = not friendsOnly or record.friendCount > 0
+            local playing = tonumber(server.playing) or 0
+            local capacity = tonumber(server.maxPlayers) or 0
+            local matchesPopulation = populationMode == 1
+                or (populationMode == 2 and capacity > playing)
+                or (populationMode == 3 and capacity > 0 and playing >= capacity)
+                or (populationMode == 4 and capacity > 0 and playing >= math.ceil(capacity * 0.8) and playing < capacity)
+            if matchesQuery and matchesFriends and matchesPopulation then
+                table.insert(result, record)
+            end
+        end
+        table.sort(result, function(a, b)
+            local aPlayers = tonumber(a.data.playing) or 0
+            local bPlayers = tonumber(b.data.playing) or 0
+            if sortMode == 2 then
+                if a.friendCount ~= b.friendCount then return a.friendCount > b.friendCount end
+                if aPlayers ~= bPlayers then return aPlayers > bPlayers end
+            elseif sortMode == 3 then
+                if aPlayers ~= bPlayers then return aPlayers < bPlayers end
+            else
+                if aPlayers ~= bPlayers then return aPlayers > bPlayers end
+            end
+            return tostring(a.data.id) < tostring(b.data.id)
+        end)
+        return result
+    end
+
+    updateFriendBadge = function()
+        local total = 0
+        for _, record in ipairs(serverRecords) do total = total + (record.friendCount or 0) end
+        if total > 0 then
+            serverBadgeText.Text = tostring(total)
+            serverBadgeFrame.Visible = true
+        else
+            serverBadgeFrame.Visible = false
+        end
+    end
+
+    local fetchServers
+
+    renderServerRows = function()
+        clearRenderedServerRows()
+        local visibleRecords = getFilteredSortedServers()
+        local rowIndex = 0
+
+        for _, record in ipairs(visibleRecords) do
+            rowIndex = rowIndex + 1
+            local serverData = record.data
+            local friendsInThisServer = record.friendCount or 0
+            local serverFrame = Instance.new("Frame")
+            serverFrame.Name = "ServerRow"
+            serverFrame.LayoutOrder = rowIndex
+            serverFrame.Size = UDim2.new(1, -6, 0, 44)
+            serverFrame.BackgroundColor3 = Color3.fromRGB(24, 29, 42)
+            serverFrame.BorderSizePixel = 0
+            serverFrame.Parent = serverListFrame
+            Instance.new("UICorner", serverFrame).CornerRadius = UDim.new(0, 6)
+            local sfStroke = Instance.new("UIStroke", serverFrame)
+            sfStroke.Color = Color3.fromRGB(40, 50, 70)
+            sfStroke.Thickness = 1
+
+            local infoLabel = Instance.new("TextLabel")
+            infoLabel.Size = UDim2.new(1, -125, 1, 0)
+            infoLabel.Position = UDim2.fromOffset(9, 0)
+            infoLabel.BackgroundTransparency = 1
+            infoLabel.Text = "#" .. tostring(rowIndex) .. "  |  " .. tostring(serverData.playing or "?") .. "/" .. tostring(serverData.maxPlayers or "?") .. " players  |  Ping unavailable"
+            infoLabel.TextColor3 = Color3.fromRGB(220, 230, 245)
+            infoLabel.Font = Enum.Font.GothamSemibold
+            infoLabel.TextSize = 10
+            infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+            infoLabel.TextTruncate = Enum.TextTruncate.AtEnd
+            infoLabel.Parent = serverFrame
+
+            if friendsInThisServer > 0 then
+                local badge = Instance.new("TextLabel")
+                badge.Size = UDim2.fromOffset(22, 20)
+                badge.Position = UDim2.new(1, -116, 0.5, -10)
+                badge.BackgroundColor3 = Color3.fromRGB(0, 150, 190)
+                badge.Text = tostring(friendsInThisServer) .. "F"
+                badge.TextColor3 = Color3.new(1, 1, 1)
+                badge.Font = Enum.Font.GothamBold
+                badge.TextSize = 9
+                badge.BorderSizePixel = 0
+                badge.Parent = serverFrame
+                Instance.new("UICorner", badge).CornerRadius = UDim.new(0, 5)
             end
 
-            if not bodyData or not bodyData.data then
-                serverHeaderStatus.Text = "Failed to load servers."
+            local joinBtn = Instance.new("TextButton")
+            joinBtn.Size = UDim2.fromOffset(78, 26)
+            joinBtn.Position = UDim2.new(1, -86, 0.5, -13)
+            local isCurrent = serverData.id == game.JobId
+            joinBtn.BackgroundColor3 = isCurrent and Color3.fromRGB(40, 50, 65) or Color3.fromRGB(0, 150, 90)
+            joinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            joinBtn.Text = isCurrent and "Current" or "Join"
+            joinBtn.Font = Enum.Font.GothamBold
+            joinBtn.TextSize = 10
+            joinBtn.BorderSizePixel = 0
+            joinBtn.AutoButtonColor = not isCurrent
+            joinBtn.Parent = serverFrame
+            Instance.new("UICorner", joinBtn).CornerRadius = UDim.new(0, 5)
+
+            if not isCurrent and type(serverData.id) == "string" and serverData.id ~= "" then
+                joinBtn.MouseButton1Click:Connect(function()
+                    if joinBtn:GetAttribute("Joining") then return end
+                    joinBtn:SetAttribute("Joining", true)
+                    joinBtn.Text = "Joining..."
+                    activeJoinButtons[joinBtn] = true
+                    local ok, err = pcall(function()
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, serverData.id, LocalPlayer)
+                    end)
+                    if not ok then
+                        joinBtn:SetAttribute("Joining", false)
+                        joinBtn.Text = "Retry"
+                        activeJoinButtons[joinBtn] = nil
+                        serverHeaderStatus.Text = "Teleport failed: " .. string.sub(tostring(err), 1, 70)
+                    else
+                        task.delay(12, function()
+                            if joinBtn and joinBtn.Parent and joinBtn:GetAttribute("Joining") then
+                                joinBtn:SetAttribute("Joining", false)
+                                joinBtn.Text = "Retry"
+                                activeJoinButtons[joinBtn] = nil
+                            end
+                        end)
+                    end
+                end)
+            end
+        end
+
+        if rowIndex == 0 then
+            local empty = Instance.new("TextLabel")
+            empty.Name = "ServerEmptyState"
+            empty.LayoutOrder = 1
+            empty.Size = UDim2.new(1, -8, 0, 36)
+            empty.BackgroundTransparency = 1
+            empty.Text = #serverRecords == 0 and "No server data loaded yet." or "No servers match these filters."
+            empty.TextColor3 = Color3.fromRGB(150, 160, 175)
+            empty.Font = Enum.Font.Gotham
+            empty.TextSize = 11
+            empty.Parent = serverListFrame
+        end
+
+        if hasMoreServers then
+            local moreBtn = Instance.new("TextButton")
+            moreBtn.Name = "LoadMoreServers"
+            moreBtn.LayoutOrder = rowIndex + 1
+            moreBtn.Size = UDim2.new(1, -8, 0, 30)
+            moreBtn.BackgroundColor3 = Color3.fromRGB(35, 75, 130)
+            moreBtn.Text = "Load More Servers"
+            moreBtn.TextColor3 = Color3.new(1, 1, 1)
+            moreBtn.Font = Enum.Font.GothamBold
+            moreBtn.TextSize = 10
+            moreBtn.BorderSizePixel = 0
+            moreBtn.Parent = serverListFrame
+            Instance.new("UICorner", moreBtn).CornerRadius = UDim.new(0, 5)
+            moreBtn.MouseButton1Click:Connect(function()
+                if not isFetchingServers then
+                    moreBtn.Text = "Loading..."
+                    fetchServers(true)
+                end
+            end)
+        end
+    end
+
+    fetchServers = function(loadNextPage, forceRefresh)
+        if isFetchingServers and not forceRefresh then return end
+        if loadNextPage and not nextServerCursor then return end
+        isFetchingServers = true
+        fetchGeneration = fetchGeneration + 1
+        local thisGeneration = fetchGeneration
+        refreshServersBtn.Text = "Loading..."
+        refreshServersBtn.Active = true
+        serverHeaderStatus.Text = loadNextPage and "Loading next page..." or "Refreshing servers..."
+
+        task.spawn(function()
+            if not friendsCacheReady then
+                cacheFriends()
+            end
+            if thisGeneration ~= fetchGeneration then return end
+
+            local placeId = game.PlaceId
+            local baseUrl = "https://games.roblox.com/v1/games/" .. tostring(placeId) .. "/servers/Public?limit=100&sortOrder=Desc"
+            local url = baseUrl
+            if loadNextPage and nextServerCursor then
+                url = baseUrl .. "&cursor=" .. HttpService:UrlEncode(nextServerCursor)
+            end
+
+            local bodyData, requestError = requestServerPage(url)
+            if thisGeneration ~= fetchGeneration then return end
+            if not bodyData then
+                if thisGeneration == fetchGeneration then
+                    serverHeaderStatus.Text = "Load failed: " .. tostring(requestError) .. " (existing results kept)"
+                    refreshServersBtn.Text = "🔄 Refresh"
+                    refreshServersBtn.Active = true
+                    isFetchingServers = false
+                end
                 return
             end
 
-            local servers = bodyData.data
-            serverHeaderStatus.Text = "Found " .. tostring(#servers) .. " Servers"
+            if not loadNextPage then
+                serverRecords = {}
+                seenServerIds = {}
+            end
 
-            for idx, serverData in ipairs(servers) do
-                local serverFrame = Instance.new("Frame")
-                serverFrame.Size = UDim2.new(1, -6, 0, 42)
-                serverFrame.BackgroundColor3 = Color3.fromRGB(24, 29, 42)
-                serverFrame.BorderSizePixel = 0
-                serverFrame.Parent = serverListFrame
-
-                Instance.new("UICorner", serverFrame).CornerRadius = UDim.new(0, 6)
-                local sfStroke = Instance.new("UIStroke", serverFrame)
-                sfStroke.Color = Color3.fromRGB(40, 50, 70)
-                sfStroke.Thickness = 1
-
-                local friendsInThisServer = 0
-                if serverData.players then
-                    for _, pData in ipairs(serverData.players) do
-                        if pData.id and friendIds[pData.id] then
-                            friendsInThisServer = friendsInThisServer + 1
+            local added = 0
+            for _, serverData in ipairs(bodyData.data) do
+                if type(serverData) == "table" and type(serverData.id) == "string" and serverData.id ~= "" and not seenServerIds[serverData.id] then
+                    seenServerIds[serverData.id] = true
+                    local friendCount = 0
+                    if type(serverData.players) == "table" then
+                        for _, playerData in ipairs(serverData.players) do
+                            local playerId = tonumber(playerData.id)
+                            if playerId and friendIds[playerId] then friendCount = friendCount + 1 end
                         end
                     end
-                end
-
-                totalFriendsInServers = totalFriendsInServers + friendsInThisServer
-
-                local infoLabel = Instance.new("TextLabel")
-                infoLabel.Size = UDim2.new(1, -120, 1, 0)
-                infoLabel.Position = UDim2.fromOffset(10, 0)
-                infoLabel.BackgroundTransparency = 1
-                infoLabel.Text = "Server #" .. tostring(idx) .. "  |  👤 " .. tostring(serverData.playing) .. "/" .. tostring(serverData.maxPlayers) .. "  |  ⚡ " .. tostring(serverData.ping or "N/A") .. "ms"
-                infoLabel.TextColor3 = Color3.fromRGB(220, 230, 245)
-                infoLabel.Font = Enum.Font.GothamSemibold
-                infoLabel.TextSize = 11
-                infoLabel.TextXAlignment = Enum.TextXAlignment.Left
-                infoLabel.Parent = serverFrame
-
-                if friendsInThisServer > 0 then
-                    local sBadgeFrame = Instance.new("Frame")
-                    sBadgeFrame.Size = UDim2.fromOffset(20, 20)
-                    sBadgeFrame.Position = UDim2.new(1, -135, 0.5, -10)
-                    sBadgeFrame.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
-                    sBadgeFrame.BorderSizePixel = 0
-                    sBadgeFrame.Parent = serverFrame
-
-                    Instance.new("UICorner", sBadgeFrame).CornerRadius = UDim.new(1, 0)
-                    local sBadgeStroke = Instance.new("UIStroke", sBadgeFrame)
-                    sBadgeStroke.Color = Color3.fromRGB(255, 255, 255)
-                    sBadgeStroke.Thickness = 1.5
-
-                    local sBadgeLbl = Instance.new("TextLabel")
-                    sBadgeLbl.Size = UDim2.fromScale(1, 1)
-                    sBadgeLbl.BackgroundTransparency = 1
-                    sBadgeLbl.Text = tostring(friendsInThisServer)
-                    sBadgeLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-                    sBadgeLbl.Font = Enum.Font.GothamBold
-                    sBadgeLbl.TextSize = 10
-                    sBadgeLbl.Parent = sBadgeFrame
-                end
-
-                local joinBtn = Instance.new("TextButton")
-                joinBtn.Size = UDim2.fromOffset(80, 26)
-                joinBtn.Position = UDim2.new(1, -90, 0.5, -13)
-                joinBtn.BackgroundColor3 = (serverData.id == game.JobId) and Color3.fromRGB(40, 50, 65) or Color3.fromRGB(0, 150, 90)
-                joinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-                joinBtn.Text = (serverData.id == game.JobId) and "Current" or "Join"
-                joinBtn.Font = Enum.Font.GothamBold
-                joinBtn.TextSize = 11
-                joinBtn.BorderSizePixel = 0
-                joinBtn.AutoButtonColor = false
-                joinBtn.Parent = serverFrame
-
-                Instance.new("UICorner", joinBtn).CornerRadius = UDim.new(0, 5)
-
-                if serverData.id ~= game.JobId then
-                    joinBtn.MouseButton1Click:Connect(function()
-                        joinBtn.Text = "Joining..."
-                        TeleportService:TeleportToPlaceInstance(placeId, serverData.id, LocalPlayer)
-                    end)
+                    table.insert(serverRecords, {data = serverData, friendCount = friendCount})
+                    added = added + 1
                 end
             end
 
-            if totalFriendsInServers > 0 then
-                serverBadgeText.Text = tostring(totalFriendsInServers)
-                serverBadgeFrame.Visible = true
-            else
-                serverBadgeFrame.Visible = false
-            end
+            nextServerCursor = bodyData.nextPageCursor
+            hasMoreServers = type(nextServerCursor) == "string" and nextServerCursor ~= ""
+            if thisGeneration ~= fetchGeneration then return end
+            renderServerRows()
+            updateFriendBadge()
+            local friendNote = friendsCacheError and " · Friend detection incomplete/unavailable" or ""
+            serverHeaderStatus.Text = "Loaded " .. tostring(#serverRecords) .. " servers" .. (hasMoreServers and " · More available" or " · End of list") .. friendNote
+            refreshServersBtn.Text = "🔄 Refresh"
+            refreshServersBtn.Active = true
+            isFetchingServers = false
         end)
     end
 
-    refreshServersBtn.MouseButton1Click:Connect(fetchServers)
-    task.spawn(fetchServers)
+    sortServersBtn.MouseButton1Click:Connect(function()
+        sortMode = (sortMode % 3) + 1
+        local labels = {"Sort: Players ↓", "Sort: Friends ↓", "Sort: Players ↑"}
+        sortServersBtn.Text = labels[sortMode]
+        renderServerRows()
+    end)
+
+    friendsOnlyBtn.MouseButton1Click:Connect(function()
+        friendsOnly = not friendsOnly
+        friendsOnlyBtn.Text = friendsOnly and "Friends: Only" or "Friends: All"
+        friendsOnlyBtn.BackgroundColor3 = friendsOnly and Color3.fromRGB(0, 115, 145) or Color3.fromRGB(35, 75, 130)
+        renderServerRows()
+    end)
+
+    populationFilterBtn.MouseButton1Click:Connect(function()
+        populationMode = (populationMode % 4) + 1
+        local labels = {"Slots: Any", "Slots: Open", "Slots: Full", "Slots: Nearly Full"}
+        populationFilterBtn.Text = labels[populationMode]
+        renderServerRows()
+    end)
+
+    serverSearchBox:GetPropertyChangedSignal("Text"):Connect(renderServerRows)
+    refreshServersBtn.MouseButton1Click:Connect(function()
+        fetchServers(false, true)
+    end)
+
+    addConnection(TeleportService.TeleportInitFailed:Connect(function(player, result, message)
+        if player ~= LocalPlayer then return end
+        for button in pairs(activeJoinButtons) do
+            if button and button.Parent then
+                button:SetAttribute("Joining", false)
+                button.Text = "Retry"
+            end
+            activeJoinButtons[button] = nil
+        end
+        serverHeaderStatus.Text = "Teleport failed: " .. string.sub(tostring(message or result), 1, 75)
+    end))
+
+    task.spawn(cacheFriends)
+    task.spawn(function()
+        while gui and gui.Parent and not shuttingDown do
+            task.wait(30)
+            if gui and gui.Parent and not shuttingDown then task.spawn(cacheFriends) end
+        end
+    end)
+    task.spawn(function() fetchServers(false) end)
+    registerCleanup(function()
+        fetchGeneration = fetchGeneration + 1
+        isFetchingServers = false
+        for button in pairs(activeJoinButtons) do
+            if button and button.Parent then
+                pcall(function() button:SetAttribute("Joining", false); button.Text = "Join" end)
+            end
+            activeJoinButtons[button] = nil
+        end
+    end)
 end
 
 --========================================================
 -- MODULE 2.8: ADVANCED PLAYER SEARCH TAB & DETAIL INSPECTOR
---========================================================
+-- Search logic hardened while preserving the existing Search tab layout and styling.
 do
     local searchInput = Instance.new("TextBox")
     searchInput.Size = UDim2.new(1, -95, 0, 32)
@@ -1387,120 +2624,272 @@ do
     end
 
     local searchScroll = createScrollingFrame(resultsContainer)
+    local viewToken = 0
+    local recentSearches = {}
+    local MAX_RECENT_SEARCHES = 8
 
-    local function showPlayerDetails(targetUserId)
+    local function beginView()
+        viewToken = viewToken + 1
+        return viewToken
+    end
+
+    local function isCurrentView(token)
+        return token == viewToken and searchScroll and searchScroll.Parent ~= nil
+    end
+
+    local function resetSearchScroll()
         searchScroll:ClearAllChildren()
-        Instance.new("UIListLayout", searchScroll).Padding = UDim.new(0, 6)
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 6)
+        layout.Parent = searchScroll
+    end
+
+    local function setSearchMessage(message, color)
+        resetSearchScroll()
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -6, 0, 36)
+        label.BackgroundTransparency = 1
+        label.Text = tostring(message)
+        label.TextColor3 = color or Color3.fromRGB(0, 200, 255)
+        label.Font = Enum.Font.GothamBold
+        label.TextSize = 11
+        label.TextWrapped = true
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = searchScroll
+        return label
+    end
+
+    local function safeDecodeResponse(response)
+        if not response or type(response.Body) ~= "string" or response.Body == "" then
+            return nil, "Empty response"
+        end
+        if response.Success == false then
+            return nil, "HTTP request failed"
+        end
+        if type(response.StatusCode) == "number" and (response.StatusCode < 200 or response.StatusCode >= 300) then
+            return nil, "HTTP " .. tostring(response.StatusCode)
+        end
+        local ok, decoded = pcall(function()
+            return HttpService:JSONDecode(response.Body)
+        end)
+        if not ok or type(decoded) ~= "table" then
+            return nil, "Invalid JSON response"
+        end
+        return decoded
+    end
+
+    local function requestJson(method, url, body)
+        local options = { Url = url, Method = method or "GET" }
+        if body ~= nil then
+            options.Headers = { ["Content-Type"] = "application/json" }
+            options.Body = HttpService:JSONEncode(body)
+        end
+        local ok, response = pcall(function()
+            return httpRequest(options)
+        end)
+        if not ok or not response then
+            return nil, "Request unavailable"
+        end
+        return safeDecodeResponse(response)
+    end
+
+    local function encodeQuery(value)
+        local ok, encoded = pcall(function()
+            return HttpService:UrlEncode(value)
+        end)
+        if ok and type(encoded) == "string" then
+            return encoded
+        end
+        return tostring(value):gsub("([^%w%-_%.~])", function(char)
+            return string.format("%%%02X", string.byte(char))
+        end)
+    end
+
+    local function formatCount(value)
+        local number = tonumber(value)
+        if not number then return "N/A" end
+        if number >= 1000000 then
+            return string.format("%.1fM", number / 1000000)
+        elseif number >= 1000 then
+            return string.format("%.1fK", number / 1000)
+        end
+        return tostring(math.floor(number))
+    end
+
+    local function addRecentSearch(query)
+        for index = #recentSearches, 1, -1 do
+            if recentSearches[index]:lower() == query:lower() then
+                table.remove(recentSearches, index)
+            end
+        end
+        table.insert(recentSearches, 1, query)
+        while #recentSearches > MAX_RECENT_SEARCHES do
+            table.remove(recentSearches)
+        end
+    end
+
+    local executeSearch
+
+    local function showRecentSearches()
+        local token = beginView()
+        resetSearchScroll()
+        local header = Instance.new("TextLabel")
+        header.Size = UDim2.new(1, -6, 0, 24)
+        header.BackgroundTransparency = 1
+        header.Text = "Recent Searches"
+        header.TextColor3 = Color3.fromRGB(0, 200, 255)
+        header.Font = Enum.Font.GothamBold
+        header.TextSize = 11
+        header.TextXAlignment = Enum.TextXAlignment.Left
+        header.Parent = searchScroll
+
+        if #recentSearches == 0 then
+            local empty = Instance.new("TextLabel")
+            empty.Size = UDim2.new(1, -6, 0, 28)
+            empty.BackgroundTransparency = 1
+            empty.Text = "Your recent searches will appear here."
+            empty.TextColor3 = Color3.fromRGB(155, 165, 180)
+            empty.Font = Enum.Font.Gotham
+            empty.TextSize = 10
+            empty.TextXAlignment = Enum.TextXAlignment.Left
+            empty.Parent = searchScroll
+            return
+        end
+
+        for _, recentQuery in ipairs(recentSearches) do
+            local recentButton = createContentButton(searchScroll, "↻  " .. recentQuery, UDim2.new(1, -6, 0, 30), UDim2.new(), Color3.fromRGB(24, 29, 42))
+            recentButton.TextXAlignment = Enum.TextXAlignment.Left
+            recentButton.MouseButton1Click:Connect(function()
+                if isCurrentView(token) then
+                    searchInput.Text = recentQuery
+                    executeSearch()
+                end
+            end)
+        end
+    end
+
+    local function showPlayerDetails(targetUserId, parentToken)
+        if parentToken and parentToken ~= viewToken then
+            return
+        end
+        local token = beginView()
+        resetSearchScroll()
 
         local loadingLabel = Instance.new("TextLabel")
         loadingLabel.Size = UDim2.new(1, -6, 0, 40)
         loadingLabel.BackgroundTransparency = 1
-        loadingLabel.Text = "⚡ Loading Full Player Profile & Robux Value..."
+        loadingLabel.Text = "⚡ Loading player profile..."
         loadingLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
         loadingLabel.Font = Enum.Font.GothamBold
         loadingLabel.TextSize = 12
         loadingLabel.Parent = searchScroll
 
         task.spawn(function()
-            local targetPlayerObj = Players:GetPlayerByUserId(targetUserId)
+            local userId = tonumber(targetUserId)
+            if not userId or userId <= 0 then
+                if isCurrentView(token) then setSearchMessage("Invalid User ID.", Color3.fromRGB(255, 120, 120)) end
+                return
+            end
+
+            local targetPlayerObj = Players:GetPlayerByUserId(userId)
             local isTargetInServer = targetPlayerObj ~= nil
 
-            -- 1. User Info & Bio
-            local userUrl = "https://users.roblox.com/v1/users/" .. tostring(targetUserId)
-            local userRes = httpRequest({Url = userUrl, Method = "GET"})
-            local userData = userRes and HttpService:JSONDecode(userRes.Body) or {}
+            -- Each endpoint is isolated: a failed optional endpoint does not cancel the profile.
+            local userData = requestJson("GET", "https://users.roblox.com/v1/users/" .. tostring(userId)) or {}
+            if not isCurrentView(token) then return end
+            if not userData.id then
+                setSearchMessage("Unable to load this profile. The account may be unavailable or the request was blocked.", Color3.fromRGB(255, 150, 120))
+                return
+            end
 
-            -- 2. Online Status via Presence API
-            local onlineStatusText = "⚪ Offline"
-            local presenceUrl = "https://presence.roblox.com/v1/presence/users"
-            local presenceRes = httpRequest({
-                Url = presenceUrl,
-                Method = "POST",
-                Headers = { ["Content-Type"] = "application/json" },
-                Body = HttpService:JSONEncode({ userIds = { targetUserId } })
-            })
-            if presenceRes and presenceRes.Body then
-                local pData = HttpService:JSONDecode(presenceRes.Body)
-                if pData and pData.userPresences and pData.userPresences[1] then
-                    local typeVal = pData.userPresences[1].userPresenceType
-                    if typeVal == 1 then
-                        onlineStatusText = "🟢 Online (Website)"
-                    elseif typeVal == 2 then
-                        onlineStatusText = "🟢 In Game"
-                    elseif typeVal == 3 then
-                        onlineStatusText = "🟢 In Studio"
-                    end
+            local onlineStatusText = isTargetInServer and "🟢 In This Server" or "⚪ Offline / Unknown"
+            local presenceData = requestJson("POST", "https://presence.roblox.com/v1/presence/users", { userIds = { userId } })
+            if presenceData and presenceData.userPresences and presenceData.userPresences[1] then
+                local presenceType = tonumber(presenceData.userPresences[1].userPresenceType) or 0
+                if presenceType == 0 then
+                    onlineStatusText = "⚪ Offline"
+                elseif presenceType == 1 then
+                    onlineStatusText = "🟢 Online (Website)"
+                elseif presenceType == 2 then
+                    onlineStatusText = "🟢 In Game"
+                elseif presenceType == 3 then
+                    onlineStatusText = "🟢 In Studio"
                 end
             end
 
-            -- 3. Currently Wearing & Correct Robux Value via Catalog Items Details POST API
-            local wearUrl = "https://avatar.roblox.com/v1/users/" .. tostring(targetUserId) .. "/currently-wearing"
-            local wearRes = httpRequest({Url = wearUrl, Method = "GET"})
-            local wearData = wearRes and HttpService:JSONDecode(wearRes.Body) or { assetIds = {} }
-            local assetIds = wearData.assetIds or {}
-
-            local totalRobux = 0
-            local itemNames = {}
+            local wearData = requestJson("GET", "https://avatar.roblox.com/v1/users/" .. tostring(userId) .. "/currently-wearing") or {}
+            local assetIds = type(wearData.assetIds) == "table" and wearData.assetIds or {}
+            local totalRobux, pricedItems, itemNames = 0, 0, {}
+            local catalogAvailable = #assetIds == 0
             if #assetIds > 0 then
-                local catalogUrl = "https://catalog.roblox.com/v1/catalog/items/details"
                 local itemsPayload = { items = {} }
-                for _, id in ipairs(assetIds) do
-                    table.insert(itemsPayload.items, { itemType = "Asset", id = id })
+                for _, assetId in ipairs(assetIds) do
+                    local numericId = tonumber(assetId)
+                    if numericId then
+                        table.insert(itemsPayload.items, { itemType = "Asset", id = numericId })
+                    end
                 end
-
-                local catalogRes = httpRequest({
-                    Url = catalogUrl,
-                    Method = "POST",
-                    Headers = { ["Content-Type"] = "application/json" },
-                    Body = HttpService:JSONEncode(itemsPayload)
-                })
-
-                if catalogRes and catalogRes.Body then
-                    local catalogJson = HttpService:JSONDecode(catalogRes.Body)
-                    if catalogJson and catalogJson.data then
-                        for _, item in ipairs(catalogJson.data) do
-                            local price = item.price or (item.lowestPrice and item.lowestPrice) or 0
-                            totalRobux = totalRobux + price
-                            table.insert(itemNames, (item.name or "Asset") .. " (" .. tostring(price) .. " R$)")
+                if #itemsPayload.items > 0 then
+                    local catalogData = requestJson("POST", "https://catalog.roblox.com/v1/catalog/items/details", itemsPayload)
+                    if catalogData and type(catalogData.data) == "table" then
+                        catalogAvailable = true
+                        for _, item in ipairs(catalogData.data) do
+                            local price = tonumber(item.price) or tonumber(item.lowestPrice)
+                            local itemName = tostring(item.name or "Asset")
+                            if price then
+                                totalRobux = totalRobux + price
+                                pricedItems = pricedItems + 1
+                                table.insert(itemNames, itemName .. " (" .. tostring(price) .. " R$)")
+                            else
+                                table.insert(itemNames, itemName .. " (price unavailable)")
+                            end
                         end
                     end
                 end
             end
 
-            -- 4. Friends Count & Mutual Friends
-            local friendsCount = 0
-            local fCountUrl = "https://friends.roblox.com/v1/users/" .. tostring(targetUserId) .. "/friends/count"
-            local fCountRes = httpRequest({Url = fCountUrl, Method = "GET"})
-            if fCountRes then
-                local fCountData = HttpService:JSONDecode(fCountRes.Body)
-                friendsCount = fCountData and fCountData.count or 0
-            end
+            local friendsData = requestJson("GET", "https://friends.roblox.com/v1/users/" .. tostring(userId) .. "/friends/count") or {}
+            local followersData = requestJson("GET", "https://friends.roblox.com/v1/users/" .. tostring(userId) .. "/followers/count") or {}
+            local followingData = requestJson("GET", "https://friends.roblox.com/v1/users/" .. tostring(userId) .. "/followings/count") or {}
+            local friendsCount = tonumber(friendsData.count)
+            local followersCount = tonumber(followersData.count)
+            local followingCount = tonumber(followingData.count)
 
+            -- Mutual-friend lookup is deliberately capped to avoid unbounded paging/API traffic.
             local mutualFriends = {}
+            local mutualLookupAvailable = false
             pcall(function()
-                local targetFriendsPages = Players:GetFriendsAsync(targetUserId)
-                local localFriendsPages = Players:GetFriendsAsync(LocalPlayer.UserId)
+                local localFriendPages = Players:GetFriendsAsync(LocalPlayer.UserId)
+                local targetFriendPages = Players:GetFriendsAsync(userId)
                 local localFriendSet = {}
-                while true do
-                    for _, f in ipairs(localFriendsPages:GetCurrentPage()) do localFriendSet[f.Id] = f.DisplayName end
-                    if localFriendsPages.IsFinished then break end
-                    localFriendsPages:AdvanceToNextPageAsync()
-                end
-                while true do
-                    for _, f in ipairs(targetFriendsPages:GetCurrentPage()) do
-                        if localFriendSet[f.Id] then
-                            table.insert(mutualFriends, f.DisplayName .. " (@" .. f.Username .. ")")
+                local maxPages = 3
+                local pageCount = 0
+                repeat
+                    pageCount = pageCount + 1
+                    for _, friend in ipairs(localFriendPages:GetCurrentPage()) do
+                        localFriendSet[friend.Id] = true
+                    end
+                    if localFriendPages.IsFinished or pageCount >= maxPages then break end
+                    localFriendPages:AdvanceToNextPageAsync()
+                until false
+
+                pageCount = 0
+                repeat
+                    pageCount = pageCount + 1
+                    for _, friend in ipairs(targetFriendPages:GetCurrentPage()) do
+                        if localFriendSet[friend.Id] then
+                            table.insert(mutualFriends, tostring(friend.DisplayName or friend.Username or "User") .. " (@" .. tostring(friend.Username or "unknown") .. ")")
                         end
                     end
-                    if targetFriendsPages.IsFinished then break end
-                    targetFriendsPages:AdvanceToNextPageAsync()
-                end
+                    if targetFriendPages.IsFinished or pageCount >= maxPages then break end
+                    targetFriendPages:AdvanceToNextPageAsync()
+                until false
+                mutualLookupAvailable = true
             end)
 
-            searchScroll:ClearAllChildren()
-            Instance.new("UIListLayout", searchScroll).Padding = UDim.new(0, 6)
+            if not isCurrentView(token) then return end
+            resetSearchScroll()
 
-            -- Header Profile Card
             local profileCard = Instance.new("Frame")
             profileCard.Size = UDim2.new(1, -6, 0, 110)
             profileCard.BackgroundColor3 = Color3.fromRGB(20, 25, 38)
@@ -1514,7 +2903,7 @@ do
             avatarImg.Size = UDim2.fromOffset(80, 80)
             avatarImg.Position = UDim2.fromOffset(8, 15)
             avatarImg.BackgroundColor3 = Color3.fromRGB(12, 15, 22)
-            avatarImg.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(targetUserId) .. "&w=150&h=150"
+            avatarImg.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(userId) .. "&w=150&h=150"
             avatarImg.Parent = profileCard
             Instance.new("UICorner", avatarImg).CornerRadius = UDim.new(0, 6)
 
@@ -1522,7 +2911,7 @@ do
             nameLabel.Size = UDim2.new(1, -95, 0, 18)
             nameLabel.Position = UDim2.fromOffset(95, 6)
             nameLabel.BackgroundTransparency = 1
-            nameLabel.Text = (userData.displayName or "User") .. " (@" .. (userData.name or "Name") .. ")"
+            nameLabel.Text = tostring(userData.displayName or "User") .. " (@" .. tostring(userData.name or "unknown") .. ")"
             nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
             nameLabel.Font = Enum.Font.GothamBold
             nameLabel.TextSize = 12
@@ -1533,18 +2922,26 @@ do
             statusLabel.Size = UDim2.new(1, -95, 0, 16)
             statusLabel.Position = UDim2.fromOffset(95, 24)
             statusLabel.BackgroundTransparency = 1
-            statusLabel.Text = "Status: " .. onlineStatusText
+            statusLabel.Text = "Status: " .. onlineStatusText .. " | ID: " .. tostring(userId)
             statusLabel.TextColor3 = Color3.fromRGB(0, 230, 255)
             statusLabel.Font = Enum.Font.GothamSemibold
             statusLabel.TextSize = 10
             statusLabel.TextXAlignment = Enum.TextXAlignment.Left
             statusLabel.Parent = profileCard
 
+            local outfitText
+            if #assetIds == 0 then
+                outfitText = "💎 Outfit Value: No catalog assets found"
+            elseif catalogAvailable then
+                outfitText = "💎 Outfit Value: ~" .. tostring(totalRobux) .. " R$ (" .. tostring(pricedItems) .. "/" .. tostring(#assetIds) .. " priced)"
+            else
+                outfitText = "💎 Outfit Value: Unavailable"
+            end
             local robuxLabel = Instance.new("TextLabel")
             robuxLabel.Size = UDim2.new(1, -95, 0, 16)
             robuxLabel.Position = UDim2.fromOffset(95, 42)
             robuxLabel.BackgroundTransparency = 1
-            robuxLabel.Text = "💎 Outfit Value: " .. tostring(totalRobux) .. " Robux"
+            robuxLabel.Text = outfitText
             robuxLabel.TextColor3 = Color3.fromRGB(0, 230, 140)
             robuxLabel.Font = Enum.Font.GothamBold
             robuxLabel.TextSize = 10
@@ -1555,10 +2952,10 @@ do
             friendStatsLbl.Size = UDim2.new(1, -95, 0, 16)
             friendStatsLbl.Position = UDim2.fromOffset(95, 60)
             friendStatsLbl.BackgroundTransparency = 1
-            friendStatsLbl.Text = "👥 Friends: " .. tostring(friendsCount) .. " | ⭐ Mutual: " .. tostring(#mutualFriends)
+            friendStatsLbl.Text = "👥 Friends: " .. formatCount(friendsCount) .. " | Followers: " .. formatCount(followersCount) .. " | Following: " .. formatCount(followingCount) .. " | Mutual: " .. (mutualLookupAvailable and tostring(#mutualFriends) or "N/A")
             friendStatsLbl.TextColor3 = Color3.fromRGB(200, 220, 255)
             friendStatsLbl.Font = Enum.Font.GothamSemibold
-            friendStatsLbl.TextSize = 10
+            friendStatsLbl.TextSize = 9
             friendStatsLbl.TextXAlignment = Enum.TextXAlignment.Left
             friendStatsLbl.Parent = profileCard
 
@@ -1567,29 +2964,32 @@ do
             joinMapBtn.Position = UDim2.fromOffset(95, 79)
             joinMapBtn.BackgroundColor3 = isTargetInServer and Color3.fromRGB(0, 140, 200) or Color3.fromRGB(35, 75, 130)
             joinMapBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            joinMapBtn.Text = isTargetInServer and "🟢 Teleport to Player in Server" or "🚀 Join Player Map Server"
+            joinMapBtn.Text = isTargetInServer and "🟢 Teleport to Player in Server" or "Player Not in This Server"
             joinMapBtn.Font = Enum.Font.GothamBold
             joinMapBtn.TextSize = 10
             joinMapBtn.BorderSizePixel = 0
             joinMapBtn.Parent = profileCard
+            joinMapBtn.AutoButtonColor = isTargetInServer
             Instance.new("UICorner", joinMapBtn).CornerRadius = UDim.new(0, 4)
+            if isTargetInServer then
+                joinMapBtn.MouseButton1Click:Connect(function()
+                    local targetCharacter = targetPlayerObj and targetPlayerObj.Character
+                    local localCharacter = LocalPlayer.Character
+                    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+                    local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
+                    if targetRoot and localRoot then
+                        localRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 3)
+                    else
+                        joinMapBtn.Text = "Character unavailable"
+                    end
+                end)
+            end
 
-            joinMapBtn.MouseButton1Click:Connect(function()
-                if isTargetInServer and targetPlayerObj.Character then
-                    local tRoot = targetPlayerObj.Character:FindFirstChild("HumanoidRootPart")
-                    local lRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    if tRoot and lRoot then lRoot.CFrame = tRoot.CFrame * CFrame.new(0, 0, 3) end
-                else
-                    joinMapBtn.Text = "Attempting Join..."
-                    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
-                end
-            end)
-
-            -- Bio / Description Box
             local bioBox = Instance.new("TextLabel")
             bioBox.Size = UDim2.new(1, -6, 0, 60)
             bioBox.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
-            bioBox.Text = "📝 Description: " .. (userData.description ~= "" and userData.description or "No description provided.")
+            local description = tostring(userData.description or "")
+            bioBox.Text = "📝 Description: " .. (description ~= "" and description or "No description provided.")
             bioBox.TextColor3 = Color3.fromRGB(180, 190, 210)
             bioBox.Font = Enum.Font.Gotham
             bioBox.TextSize = 10
@@ -1599,9 +2999,22 @@ do
             bioBox.Parent = searchScroll
             Instance.new("UICorner", bioBox).CornerRadius = UDim.new(0, 6)
             local bioPad = Instance.new("UIPadding", bioBox)
-            bioPad.PaddingTop = UDim.new(0, 6) bioPad.PaddingLeft = UDim.new(0, 6) bioPad.PaddingRight = UDim.new(0, 6)
+            bioPad.PaddingTop = UDim.new(0, 6)
+            bioPad.PaddingLeft = UDim.new(0, 6)
+            bioPad.PaddingRight = UDim.new(0, 6)
 
-            -- Wearing List
+            local createdText = tostring(userData.created or "Unknown")
+            if #createdText >= 10 then createdText = string.sub(createdText, 1, 10) end
+            local createdLabel = Instance.new("TextLabel")
+            createdLabel.Size = UDim2.new(1, -6, 0, 20)
+            createdLabel.BackgroundColor3 = Color3.fromRGB(24, 28, 40)
+            createdLabel.Text = "📅 Account created: " .. createdText
+            createdLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
+            createdLabel.Font = Enum.Font.Gotham
+            createdLabel.TextSize = 10
+            createdLabel.TextXAlignment = Enum.TextXAlignment.Left
+            createdLabel.Parent = searchScroll
+
             local wearHeader = Instance.new("TextLabel")
             wearHeader.Size = UDim2.new(1, 0, 0, 18)
             wearHeader.BackgroundTransparency = 1
@@ -1612,78 +3025,124 @@ do
             wearHeader.TextXAlignment = Enum.TextXAlignment.Left
             wearHeader.Parent = searchScroll
 
-            for _, itemName in ipairs(itemNames) do
-                local itemLbl = Instance.new("TextLabel")
-                itemLbl.Size = UDim2.new(1, -6, 0, 20)
-                itemLbl.BackgroundColor3 = Color3.fromRGB(24, 28, 40)
-                itemLbl.Text = " • " .. itemName
-                itemLbl.TextColor3 = Color3.fromRGB(220, 230, 245)
-                itemLbl.Font = Enum.Font.Gotham
-                itemLbl.TextSize = 10
-                itemLbl.TextXAlignment = Enum.TextXAlignment.Left
-                itemLbl.Parent = searchScroll
-                Instance.new("UICorner", itemLbl).CornerRadius = UDim.new(0, 4)
+            if #itemNames == 0 then
+                local emptyItems = Instance.new("TextLabel")
+                emptyItems.Size = UDim2.new(1, -6, 0, 20)
+                emptyItems.BackgroundColor3 = Color3.fromRGB(24, 28, 40)
+                emptyItems.Text = " • No public catalog items returned."
+                emptyItems.TextColor3 = Color3.fromRGB(170, 180, 195)
+                emptyItems.Font = Enum.Font.Gotham
+                emptyItems.TextSize = 10
+                emptyItems.TextXAlignment = Enum.TextXAlignment.Left
+                emptyItems.Parent = searchScroll
+            else
+                for _, itemName in ipairs(itemNames) do
+                    local itemLbl = Instance.new("TextLabel")
+                    itemLbl.Size = UDim2.new(1, -6, 0, 20)
+                    itemLbl.BackgroundColor3 = Color3.fromRGB(24, 28, 40)
+                    itemLbl.Text = " • " .. tostring(itemName)
+                    itemLbl.TextColor3 = Color3.fromRGB(220, 230, 245)
+                    itemLbl.Font = Enum.Font.Gotham
+                    itemLbl.TextSize = 10
+                    itemLbl.TextXAlignment = Enum.TextXAlignment.Left
+                    itemLbl.Parent = searchScroll
+                    Instance.new("UICorner", itemLbl).CornerRadius = UDim.new(0, 4)
+                end
+            end
+
+            if not mutualLookupAvailable then
+                local mutualNote = Instance.new("TextLabel")
+                mutualNote.Size = UDim2.new(1, -6, 0, 20)
+                mutualNote.BackgroundTransparency = 1
+                mutualNote.Text = "Mutual friends unavailable (private/limited friend data or API restriction)."
+                mutualNote.TextColor3 = Color3.fromRGB(150, 160, 175)
+                mutualNote.Font = Enum.Font.Gotham
+                mutualNote.TextSize = 9
+                mutualNote.TextWrapped = true
+                mutualNote.Parent = searchScroll
             end
         end)
     end
 
-    local function executeSearch()
-        local query = searchInput.Text:lower():gsub("%s+", "")
-        if query == "" then return end
+    executeSearch = function()
+        local rawQuery = tostring(searchInput.Text or "")
+        local query = rawQuery:match("^%s*(.-)%s*$") or ""
+        if query == "" then
+            showRecentSearches()
+            return
+        end
 
-        searchScroll:ClearAllChildren()
-        Instance.new("UIListLayout", searchScroll).Padding = UDim.new(0, 6)
-
-        local status = Instance.new("TextLabel")
-        status.Size = UDim2.new(1, -6, 0, 30)
-        status.BackgroundTransparency = 1
-        status.Text = "Searching for '" .. query .. "'..."
-        status.TextColor3 = Color3.fromRGB(0, 200, 255)
-        status.Font = Enum.Font.GothamBold
-        status.TextSize = 11
-        status.Parent = searchScroll
+        local token = beginView()
+        addRecentSearch(query)
+        searchSubmitBtn.Text = "Searching..."
+        searchSubmitBtn.AutoButtonColor = false
+        setSearchMessage("Searching for '" .. query .. "'...")
 
         task.spawn(function()
-            local targetUserId = nil
-            local idSuccess, idResult = pcall(function() return Players:GetUserIdFromNameAsync(searchInput.Text) end)
-            if idSuccess and idResult then
-                targetUserId = idResult
+            local results, seenIds = {}, {}
+            local function addResult(data)
+                if type(data) ~= "table" then return end
+                local id = tonumber(data.id)
+                if not id or seenIds[id] then return end
+                seenIds[id] = true
+                table.insert(results, {
+                    id = id,
+                    name = tostring(data.name or data.username or "Unknown"),
+                    displayName = tostring(data.displayName or data.name or data.username or "Unknown")
+                })
             end
 
-            local results = {}
-            if targetUserId then
-                local userUrl = "https://users.roblox.com/v1/users/" .. tostring(targetUserId)
-                local res = httpRequest({Url = userUrl, Method = "GET"})
-                if res and res.Body then
-                    local data = HttpService:JSONDecode(res.Body)
-                    if data and data.id then
-                        table.insert(results, { id = data.id, name = data.name, displayName = data.displayName })
-                    end
+            -- Numeric input is treated as a direct User ID lookup.
+            local numericId = tonumber(query)
+            if numericId and numericId > 0 and numericId % 1 == 0 then
+                local directData = requestJson("GET", "https://users.roblox.com/v1/users/" .. string.format("%.0f", numericId))
+                if directData and directData.id then addResult(directData) end
+            else
+                -- Exact username lookup first, then display-name/partial search.
+                local nameSuccess, resolvedId = pcall(function()
+                    return Players:GetUserIdFromNameAsync(query)
+                end)
+                if nameSuccess and resolvedId then
+                    local exactData = requestJson("GET", "https://users.roblox.com/v1/users/" .. tostring(resolvedId))
+                    if exactData and exactData.id then addResult(exactData) end
                 end
             end
 
-            if #results == 0 then
-                local searchUrl = "https://users.roblox.com/v1/users/search?keyword=" .. query .. "&limit=10"
-                local res = httpRequest({Url = searchUrl, Method = "GET"})
-                local searchData = res and HttpService:JSONDecode(res.Body) or { data = {} }
-                results = searchData.data or {}
+            if #results == 0 or not (numericId and numericId > 0 and numericId % 1 == 0) then
+                local searchUrl = "https://users.roblox.com/v1/users/search?keyword=" .. encodeQuery(query) .. "&limit=10"
+                local searchData = requestJson("GET", searchUrl)
+                if searchData and type(searchData.data) == "table" then
+                    for _, result in ipairs(searchData.data) do addResult(result) end
+                end
             end
 
-            searchScroll:ClearAllChildren()
-            Instance.new("UIListLayout", searchScroll).Padding = UDim.new(0, 6)
+            if not isCurrentView(token) then return end
+            searchSubmitBtn.Text = "🔍 Search"
+            searchSubmitBtn.AutoButtonColor = true
 
             if #results == 0 then
-                status.Text = "No players found matching '" .. query .. "'."
-                status.Parent = searchScroll
+                local message = setSearchMessage("No players found, or Roblox search is temporarily unavailable. Check the spelling and try again.", Color3.fromRGB(255, 150, 120))
                 return
             end
 
             if #results == 1 then
-                showPlayerDetails(results[1].id)
+                showPlayerDetails(results[1].id, token)
                 return
             end
 
-            for _, pData in ipairs(results) do
+            resetSearchScroll()
+            local resultsHeader = Instance.new("TextLabel")
+            resultsHeader.Size = UDim2.new(1, -6, 0, 22)
+            resultsHeader.BackgroundTransparency = 1
+            resultsHeader.Text = "Found " .. tostring(#results) .. " matching accounts"
+            resultsHeader.TextColor3 = Color3.fromRGB(0, 200, 255)
+            resultsHeader.Font = Enum.Font.GothamBold
+            resultsHeader.TextSize = 11
+            resultsHeader.TextXAlignment = Enum.TextXAlignment.Left
+            resultsHeader.Parent = searchScroll
+
+            for _, playerData in ipairs(results) do
+                if not isCurrentView(token) then return end
                 local card = Instance.new("Frame")
                 card.Size = UDim2.new(1, -6, 0, 48)
                 card.BackgroundColor3 = Color3.fromRGB(24, 29, 42)
@@ -1694,7 +3153,7 @@ do
                 headshot.Size = UDim2.fromOffset(38, 38)
                 headshot.Position = UDim2.fromOffset(5, 5)
                 headshot.BackgroundColor3 = Color3.fromRGB(15, 18, 26)
-                headshot.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(pData.id) .. "&w=150&h=150"
+                headshot.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(playerData.id) .. "&w=150&h=150"
                 headshot.Parent = card
                 Instance.new("UICorner", headshot).CornerRadius = UDim.new(1, 0)
 
@@ -1702,7 +3161,7 @@ do
                 title.Size = UDim2.new(1, -140, 1, 0)
                 title.Position = UDim2.fromOffset(50, 0)
                 title.BackgroundTransparency = 1
-                title.Text = pData.displayName .. "\n@" .. pData.name
+                title.Text = playerData.displayName .. "\n@" .. playerData.name
                 title.TextColor3 = Color3.fromRGB(240, 245, 255)
                 title.Font = Enum.Font.GothamSemibold
                 title.TextSize = 10
@@ -1711,17 +3170,18 @@ do
 
                 local inspectBtn = createContentButton(card, "Inspect Profile", UDim2.fromOffset(80, 26), UDim2.new(1, -85, 0.5, -13), Color3.fromRGB(0, 120, 200))
                 inspectBtn.MouseButton1Click:Connect(function()
-                    showPlayerDetails(pData.id)
+                    if isCurrentView(token) then showPlayerDetails(playerData.id, token) end
                 end)
             end
         end)
     end
 
     searchSubmitBtn.MouseButton1Click:Connect(executeSearch)
-    searchInput.FocusLost:Connect(function(enterPressed) if enterPressed then executeSearch() end end)
+    searchInput.FocusLost:Connect(function(enterPressed)
+        if enterPressed then executeSearch() end
+    end)
 end
 
---========================================================
 -- MODULE 3: 30 ADVANCED NEXT-GEN RTX SHADER STUDIO
 --========================================================
 do
@@ -1743,30 +3203,51 @@ do
         return btn
     end
 
+    local filterEffects = {}
+    local filterLightingOriginal = {
+        GlobalShadows = Lighting.GlobalShadows,
+        OutdoorAmbient = Lighting.OutdoorAmbient,
+        Ambient = Lighting.Ambient,
+        Brightness = Lighting.Brightness,
+        ClockTime = Lighting.ClockTime,
+        ExposureCompensation = Lighting.ExposureCompensation,
+    }
+
+    local function trackFilterEffect(effect)
+        table.insert(filterEffects, effect)
+        return effect
+    end
+
     local function clearAllFilters()
-        for _, obj in ipairs(Lighting:GetChildren()) do
-            if obj.Name:find("RTX") or obj.Name:find("Filter") then
-                obj:Destroy()
-            end
+        for _, effect in ipairs(filterEffects) do
+            if effect and effect.Parent then pcall(function() effect:Destroy() end) end
+        end
+        table.clear(filterEffects)
+    end
+
+    local function restoreFilterLighting()
+        clearAllFilters()
+        for property, value in pairs(filterLightingOriginal) do
+            pcall(function() Lighting[property] = value end)
         end
     end
 
     addFilterOption("⭐ 1. Cinematic RTX Ultra", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXColorCorrection"
         cc.TintColor = Color3.fromRGB(220, 235, 255)
         cc.Saturation = 0.5
         cc.Contrast = 0.35
         cc.Brightness = 0.08
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloom"
         bloom.Intensity = 0.6
         bloom.Size = 28
         bloom.Threshold = 0.7
 
-        local rays = Instance.new("SunRaysEffect", Lighting)
+        local rays = trackFilterEffect(Instance.new("SunRaysEffect", Lighting))
         rays.Name = "RTXSunRays"
         rays.Intensity = 0.4
         rays.Spread = 0.9
@@ -1777,20 +3258,20 @@ do
 
     addFilterOption("🌆 2. Cyberpunk Neon RTX", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterCyber"
         cc.TintColor = Color3.fromRGB(255, 160, 245)
         cc.Saturation = 0.75
         cc.Contrast = 0.5
         cc.Brightness = 0.05
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomCyber"
         bloom.Intensity = 1.1
         bloom.Size = 38
         bloom.Threshold = 0.4
 
-        local atmosphere = Instance.new("Atmosphere", Lighting)
+        local atmosphere = trackFilterEffect(Instance.new("Atmosphere", Lighting))
         atmosphere.Name = "RTXAtmosphereCyber"
         atmosphere.Density = 0.35
         atmosphere.Haze = 2.0
@@ -1799,19 +3280,19 @@ do
 
     addFilterOption("🌲 3. Realistic Path-Traced Daylight", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterDay"
         cc.TintColor = Color3.fromRGB(245, 250, 255)
         cc.Saturation = 0.3
         cc.Contrast = 0.25
         cc.Brightness = 0.1
 
-        local rays = Instance.new("SunRaysEffect", Lighting)
+        local rays = trackFilterEffect(Instance.new("SunRaysEffect", Lighting))
         rays.Name = "RTXRaysDay"
         rays.Intensity = 0.6
         rays.Spread = 1.0
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomDay"
         bloom.Intensity = 0.3
         bloom.Size = 18
@@ -1823,14 +3304,14 @@ do
 
     addFilterOption("🎬 4. Moody Cinematic Dark Film", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterMoody"
         cc.TintColor = Color3.fromRGB(180, 205, 255)
         cc.Saturation = -0.05
         cc.Contrast = 0.55
         cc.Brightness = -0.05
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomMoody"
         bloom.Intensity = 0.4
         bloom.Size = 22
@@ -1838,14 +3319,14 @@ do
 
     addFilterOption("☀️ 5. Ultra HDR Vivid RTX", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterHDR"
         cc.TintColor = Color3.fromRGB(255, 255, 255)
         cc.Saturation = 0.95
         cc.Contrast = 0.4
         cc.Brightness = 0.15
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomHDR"
         bloom.Intensity = 0.5
         bloom.Size = 24
@@ -1854,13 +3335,13 @@ do
 
     addFilterOption("📻 6. Retro Synthwave Glow", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterSynth"
         cc.TintColor = Color3.fromRGB(255, 100, 230)
         cc.Saturation = 0.8
         cc.Contrast = 0.5
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomSynth"
         bloom.Intensity = 1.25
         bloom.Size = 45
@@ -1869,14 +3350,14 @@ do
 
     addFilterOption("🌌 7. Deep Space Midnight Engine", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterSpace"
         cc.TintColor = Color3.fromRGB(100, 150, 255)
         cc.Saturation = -0.2
         cc.Contrast = 0.65
         cc.Brightness = -0.12
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomSpace"
         bloom.Intensity = 0.7
         bloom.Size = 30
@@ -1884,19 +3365,19 @@ do
 
     addFilterOption("🌅 8. Golden Hour Photorealistic Sunset", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterSunset"
         cc.TintColor = Color3.fromRGB(255, 190, 130)
         cc.Saturation = 0.6
         cc.Contrast = 0.35
         cc.Brightness = 0.05
 
-        local rays = Instance.new("SunRaysEffect", Lighting)
+        local rays = trackFilterEffect(Instance.new("SunRaysEffect", Lighting))
         rays.Name = "RTXRaysSunset"
         rays.Intensity = 0.8
         rays.Spread = 1.0
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomSunset"
         bloom.Intensity = 0.6
         bloom.Size = 32
@@ -1904,7 +3385,7 @@ do
 
     addFilterOption("🎞️ 9. Monochromatic Noir Film", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterNoir"
         cc.Saturation = -1.0
         cc.Contrast = 0.7
@@ -1913,14 +3394,14 @@ do
 
     addFilterOption("🧟 10. Apocalypse Gloom Shader", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterApoc"
         cc.TintColor = Color3.fromRGB(170, 200, 150)
         cc.Saturation = -0.3
         cc.Contrast = 0.45
         cc.Brightness = -0.08
 
-        local atmosphere = Instance.new("Atmosphere", Lighting)
+        local atmosphere = trackFilterEffect(Instance.new("Atmosphere", Lighting))
         atmosphere.Name = "RTXAtmosphereApoc"
         atmosphere.Density = 0.4
         atmosphere.Haze = 3.0
@@ -1929,20 +3410,20 @@ do
 
     addFilterOption("💎 11. Hyper-Realistic RTX GI", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterGI"
         cc.TintColor = Color3.fromRGB(235, 245, 255)
         cc.Saturation = 0.45
         cc.Contrast = 0.38
         cc.Brightness = 0.08
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomGI"
         bloom.Intensity = 0.55
         bloom.Size = 25
         bloom.Threshold = 0.65
 
-        local rays = Instance.new("SunRaysEffect", Lighting)
+        local rays = trackFilterEffect(Instance.new("SunRaysEffect", Lighting))
         rays.Name = "RTXRaysGI"
         rays.Intensity = 0.5
         rays.Spread = 0.95
@@ -1953,14 +3434,14 @@ do
 
     addFilterOption("❄️ 12. Arctic Frostbite Shaders", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterFrost"
         cc.TintColor = Color3.fromRGB(180, 220, 255)
         cc.Saturation = 0.25
         cc.Contrast = 0.4
         cc.Brightness = 0.05
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomFrost"
         bloom.Intensity = 0.7
         bloom.Size = 20
@@ -1968,14 +3449,14 @@ do
 
     addFilterOption("🌋 13. Volcanic Magma Inferno", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterMagma"
         cc.TintColor = Color3.fromRGB(255, 150, 100)
         cc.Saturation = 0.8
         cc.Contrast = 0.5
         cc.Brightness = 0.05
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomMagma"
         bloom.Intensity = 1.0
         bloom.Size = 35
@@ -1984,14 +3465,14 @@ do
 
     addFilterOption("🌿 14. Emerald Jungle Forest", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterJungle"
         cc.TintColor = Color3.fromRGB(190, 245, 200)
         cc.Saturation = 0.5
         cc.Contrast = 0.3
         cc.Brightness = 0.04
 
-        local rays = Instance.new("SunRaysEffect", Lighting)
+        local rays = trackFilterEffect(Instance.new("SunRaysEffect", Lighting))
         rays.Name = "RTXRaysJungle"
         rays.Intensity = 0.4
         rays.Spread = 1.0
@@ -1999,14 +3480,14 @@ do
 
     addFilterOption("✨ 15. Ethereal Dreamscape", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterDream"
         cc.TintColor = Color3.fromRGB(240, 210, 255)
         cc.Saturation = 0.6
         cc.Contrast = 0.2
         cc.Brightness = 0.12
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomDream"
         bloom.Intensity = 0.85
         bloom.Size = 40
@@ -2015,14 +3496,14 @@ do
 
     addFilterOption("🌊 16. Deep Ocean Trench", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterOcean"
         cc.TintColor = Color3.fromRGB(130, 200, 255)
         cc.Saturation = 0.4
         cc.Contrast = 0.45
         cc.Brightness = -0.05
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomOcean"
         bloom.Intensity = 0.5
         bloom.Size = 25
@@ -2030,14 +3511,14 @@ do
 
     addFilterOption("🩸 17. Blood Moon Horror", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterBlood"
         cc.TintColor = Color3.fromRGB(255, 120, 120)
         cc.Saturation = 0.5
         cc.Contrast = 0.6
         cc.Brightness = -0.1
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomBlood"
         bloom.Intensity = 0.9
         bloom.Size = 35
@@ -2045,7 +3526,7 @@ do
 
     addFilterOption("📷 18. Vintage 1970s Film", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterVintage"
         cc.TintColor = Color3.fromRGB(255, 235, 190)
         cc.Saturation = 0.2
@@ -2055,14 +3536,14 @@ do
 
     addFilterOption("💻 19. Matrix Terminal Green", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterMatrix"
         cc.TintColor = Color3.fromRGB(150, 255, 170)
         cc.Saturation = 0.3
         cc.Contrast = 0.5
         cc.Brightness = -0.02
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomMatrix"
         bloom.Intensity = 0.8
         bloom.Size = 20
@@ -2070,14 +3551,14 @@ do
 
     addFilterOption("👑 20. Royal Gold Luxury", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterGold"
         cc.TintColor = Color3.fromRGB(255, 230, 160)
         cc.Saturation = 0.65
         cc.Contrast = 0.4
         cc.Brightness = 0.08
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomGold"
         bloom.Intensity = 0.6
         bloom.Size = 28
@@ -2085,14 +3566,14 @@ do
 
     addFilterOption("🔮 21. Twilight Amethyst", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterAmethyst"
         cc.TintColor = Color3.fromRGB(210, 180, 255)
         cc.Saturation = 0.6
         cc.Contrast = 0.4
         cc.Brightness = 0.04
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomAmethyst"
         bloom.Intensity = 0.7
         bloom.Size = 30
@@ -2100,14 +3581,14 @@ do
 
     addFilterOption("💎 22. Hyper-Clean Studio", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterStudio"
         cc.TintColor = Color3.fromRGB(255, 255, 255)
         cc.Saturation = 0.35
         cc.Contrast = 0.3
         cc.Brightness = 0.1
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomStudio"
         bloom.Intensity = 0.3
         bloom.Size = 15
@@ -2115,14 +3596,14 @@ do
 
     addFilterOption("🌌 23. Starlight Cosmic Galaxy", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterCosmic"
         cc.TintColor = Color3.fromRGB(180, 160, 255)
         cc.Saturation = 0.7
         cc.Contrast = 0.5
         cc.Brightness = -0.05
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomCosmic"
         bloom.Intensity = 1.0
         bloom.Size = 40
@@ -2130,19 +3611,19 @@ do
 
     addFilterOption("☀️ 24. Solar Flare Extreme", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterSolar"
         cc.TintColor = Color3.fromRGB(255, 220, 150)
         cc.Saturation = 0.8
         cc.Contrast = 0.45
         cc.Brightness = 0.15
 
-        local rays = Instance.new("SunRaysEffect", Lighting)
+        local rays = trackFilterEffect(Instance.new("SunRaysEffect", Lighting))
         rays.Name = "RTXRaysSolar"
         rays.Intensity = 0.95
         rays.Spread = 1.0
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomSolar"
         bloom.Intensity = 0.9
         bloom.Size = 35
@@ -2150,7 +3631,7 @@ do
 
     addFilterOption("🌑 25. Midnight Shadow Ops", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterShadow"
         cc.TintColor = Color3.fromRGB(150, 170, 210)
         cc.Saturation = -0.25
@@ -2160,14 +3641,14 @@ do
 
     addFilterOption("🌧️ 26. Neon Tokyo Rain", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterTokyo"
         cc.TintColor = Color3.fromRGB(200, 230, 255)
         cc.Saturation = 0.7
         cc.Contrast = 0.45
         cc.Brightness = 0.02
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomTokyo"
         bloom.Intensity = 0.85
         bloom.Size = 32
@@ -2176,7 +3657,7 @@ do
 
     addFilterOption("🎨 27. Hyper-Vibrant Cartoon", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterCartoon"
         cc.TintColor = Color3.fromRGB(255, 255, 255)
         cc.Saturation = 1.2
@@ -2186,7 +3667,7 @@ do
 
     addFilterOption("⚙️ 28. Copper Steampunk", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterSteampunk"
         cc.TintColor = Color3.fromRGB(255, 205, 160)
         cc.Saturation = 0.4
@@ -2196,14 +3677,14 @@ do
 
     addFilterOption("🕯️ 29. Deep Abyss Underworld", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterAbyss"
         cc.TintColor = Color3.fromRGB(255, 170, 110)
         cc.Saturation = 0.1
         cc.Contrast = 0.65
         cc.Brightness = -0.15
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomAbyss"
         bloom.Intensity = 0.75
         bloom.Size = 30
@@ -2211,20 +3692,20 @@ do
 
     addFilterOption("🌟 30. Ultra-Definition Ray-Traced Master", function()
         clearAllFilters()
-        local cc = Instance.new("ColorCorrectionEffect", Lighting)
+        local cc = trackFilterEffect(Instance.new("ColorCorrectionEffect", Lighting))
         cc.Name = "RTXFilterMaster"
         cc.TintColor = Color3.fromRGB(230, 240, 255)
         cc.Saturation = 0.55
         cc.Contrast = 0.42
         cc.Brightness = 0.08
 
-        local bloom = Instance.new("BloomEffect", Lighting)
+        local bloom = trackFilterEffect(Instance.new("BloomEffect", Lighting))
         bloom.Name = "RTXBloomMaster"
         bloom.Intensity = 0.65
         bloom.Size = 26
         bloom.Threshold = 0.6
 
-        local rays = Instance.new("SunRaysEffect", Lighting)
+        local rays = trackFilterEffect(Instance.new("SunRaysEffect", Lighting))
         rays.Name = "RTXRaysMaster"
         rays.Intensity = 0.5
         rays.Spread = 0.95
@@ -2234,9 +3715,9 @@ do
     end, Color3.fromRGB(0, 140, 90))
 
     addFilterOption("🧹 Reset & Disable All Filters", function()
-        clearAllFilters()
-        Lighting.GlobalShadows = true
+        restoreFilterLighting()
     end, Color3.fromRGB(120, 35, 45))
+    registerCleanup(restoreFilterLighting)
 end
 
 --========================================================
@@ -2344,6 +3825,14 @@ do
             Lighting.ClockTime = hd.time
         end, hd.bg)
     end
+
+    registerCleanup(function()
+        autoCycleActive = false
+        disconnectConnection(activeSkyLoopConnection)
+        activeSkyLoopConnection = nil
+        pcall(function() Lighting.ClockTime = originalClockTime end)
+        pcall(function() Lighting.Brightness = originalBrightness end)
+    end)
 end
 
 --========================================================
@@ -2444,7 +3933,27 @@ do
     end)
 
     addConnection(Players.PlayerAdded:Connect(refreshList))
-    addConnection(Players.PlayerRemoving:Connect(refreshList))
+    addConnection(Players.PlayerRemoving:Connect(function(player)
+        if selectedTarget == player then
+            selectedTarget = nil
+            if spectating then
+                spectating = false
+                local camera = Workspace.CurrentCamera
+                local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                if camera and humanoid then camera.CameraSubject = humanoid end
+                toggleSpecBtn.Text = "Start Spectating"
+                statusLabel.Text = "Target left the server"
+            end
+        end
+        refreshList()
+    end))
+    registerCleanup(function()
+        spectating = false
+        selectedTarget = nil
+        local camera = Workspace.CurrentCamera
+        local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if camera and humanoid then pcall(function() camera.CameraSubject = humanoid end) end
+    end)
     refreshList()
 end
 
@@ -2461,6 +3970,7 @@ do
     local submerged = false
     local animationPlaying = false
     local savedSubmergeY = nil
+    local savedSubmergeCFrame = nil
     local savedCameraCFrame = nil
     local savedCameraType = nil
     local savedCameraSubject = nil
@@ -2469,7 +3979,12 @@ do
     local submergeHighlight = nil
     local savedAutoRotate = nil
     local animationTrack = nil
+    local armBtn, armStroke
+    local setButtonState
+    local animationStoppedConnection = nil
+    local humanoidDiedConnection = nil
     local currentCharacter, currentHumanoid, currentRoot
+    local submergeCharacter, submergeHumanoid, submergeRoot
 
     local function getCharacterParts()
         currentCharacter = LocalPlayer.Character
@@ -2479,26 +3994,56 @@ do
         return currentHumanoid ~= nil and currentRoot ~= nil
     end
 
-    local function loadArmAnimation()
-        if not getCharacterParts() then return end
-        local animator = currentHumanoid:FindFirstChildOfClass("Animator")
+    local function loadArmAnimation(expectedCharacter)
+        local character = expectedCharacter or LocalPlayer.Character
+        if not character or character ~= LocalPlayer.Character then return false end
+
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid then return false end
+
+        currentCharacter = character
+        currentHumanoid = humanoid
+        currentRoot = character:FindFirstChild("HumanoidRootPart")
+
+        local animator = humanoid:FindFirstChildOfClass("Animator")
         if not animator then
-            animator = Instance.new("Animator")
-            animator.Parent = currentHumanoid
+            local createdAnimator = Instance.new("Animator")
+            createdAnimator.Parent = humanoid
+            animator = createdAnimator
+        end
+
+        if animationTrack then
+            pcall(function() animationTrack:Stop(0) end)
+            pcall(function() animationTrack:Destroy() end)
+            animationTrack = nil
+        end
+        if animationStoppedConnection then
+            animationStoppedConnection:Disconnect()
+            animationStoppedConnection = nil
         end
 
         local animation = Instance.new("Animation")
         animation.AnimationId = "rbxassetid://536135263"
-        local ok, track = pcall(function()
+        local ok, trackOrError = pcall(function()
             return animator:LoadAnimation(animation)
         end)
         animation:Destroy()
-        if ok then
-            animationTrack = track
-            animationTrack.Looped = true
-        else
+
+        if not ok or not trackOrError then
             animationTrack = nil
+            warn("[TheUnionHub] Arm animation could not be loaded: " .. tostring(trackOrError))
+            return false
         end
+
+        animationTrack = trackOrError
+        animationTrack.Looped = true
+        animationStoppedConnection = animationTrack.Stopped:Connect(function()
+            if animationPlaying then
+                animationPlaying = false
+                setButtonState(armBtn, armStroke, false, "Arm Animation")
+            end
+        end)
+        return true
     end
 
     local submergeBtn, submergeStroke = createContentButton(
@@ -2508,7 +4053,7 @@ do
         UDim2.fromOffset(0, 34),
         Color3.fromRGB(28, 33, 46)
     )
-    local armBtn, armStroke = createContentButton(
+    armBtn, armStroke = createContentButton(
         submergeTab,
         "Arm Animation: OFF",
         UDim2.new(1, 0, 0, 38),
@@ -2556,7 +4101,7 @@ do
     end
     depthInput.FocusLost:Connect(updateDepth)
 
-    local function setButtonState(btn, stroke, enabled, label)
+    setButtonState = function(btn, stroke, enabled, label)
         btn.Text = label .. (enabled and ": ON" or ": OFF")
         local bg = enabled and Color3.fromRGB(35, 140, 85) or Color3.fromRGB(28, 33, 46)
         local outline = enabled and Color3.fromRGB(60, 200, 120) or Color3.fromRGB(45, 55, 80)
@@ -2567,52 +4112,63 @@ do
     local function restoreCollision()
         for part, canCollide in pairs(originalCollision) do
             if part and part.Parent then
-                part.CanCollide = canCollide
+                pcall(function()
+                    part.CanCollide = canCollide
+                end)
             end
         end
         table.clear(originalCollision)
     end
 
+    -- Cleanup is deliberately independent of the current LocalPlayer.Character:
+    -- on respawn, restore the exact Humanoid and parts that were modified earlier.
     local function stopSubmerge(restorePosition)
-        if not submerged then return end
         submerged = false
 
         if submergeBaseplate then
-            submergeBaseplate:Destroy()
+            pcall(function() submergeBaseplate:Destroy() end)
             submergeBaseplate = nil
         end
 
-        if getCharacterParts() then
-            currentHumanoid.PlatformStand = savedPlatformStand == true
-            if savedAutoRotate ~= nil then currentHumanoid.AutoRotate = savedAutoRotate end
-            restoreCollision()
-            if restorePosition and savedSubmergeY then
-                local rise = submergeOffset * riseMultiplier
-                currentRoot.CFrame = CFrame.new(currentRoot.Position.X, savedSubmergeY + (rise - submergeOffset), currentRoot.Position.Z) * currentRoot.CFrame.Rotation
-            end
-        else
-            restoreCollision()
+        local humanoidToRestore = submergeHumanoid
+        if humanoidToRestore and humanoidToRestore.Parent then
+            pcall(function()
+                if savedPlatformStand ~= nil then
+                    humanoidToRestore.PlatformStand = savedPlatformStand
+                end
+                if savedAutoRotate ~= nil then
+                    humanoidToRestore.AutoRotate = savedAutoRotate
+                end
+            end)
         end
 
+        -- On a normal user-requested stop, return only to the character's own
+        -- saved starting transform. Respawn/death cleanup passes false and never
+        -- moves a replacement character.
+        if restorePosition and submergeRoot and submergeRoot.Parent and savedSubmergeCFrame then
+            pcall(function()
+                submergeRoot.CFrame = savedSubmergeCFrame
+            end)
+        end
+        restoreCollision()
+
         if submergeHighlight then
-            submergeHighlight:Destroy()
+            pcall(function() submergeHighlight:Destroy() end)
             submergeHighlight = nil
         end
 
-        local camera = Workspace.CurrentCamera
-        if camera then
-            if savedCameraType then camera.CameraType = savedCameraType end
-            if savedCameraSubject and savedCameraSubject.Parent then
-                camera.CameraSubject = savedCameraSubject
-            end
-            if savedCameraCFrame then camera.CFrame = savedCameraCFrame end
-        end
-
+        -- The module does not intentionally take control of the camera, so do not
+        -- force an old camera CFrame onto a newly spawned character/camera.
         savedSubmergeY = nil
+        savedSubmergeCFrame = nil
         savedCameraCFrame = nil
         savedCameraType = nil
         savedCameraSubject = nil
+        savedPlatformStand = nil
         savedAutoRotate = nil
+        submergeCharacter = nil
+        submergeHumanoid = nil
+        submergeRoot = nil
         setButtonState(submergeBtn, submergeStroke, false, "Submerge")
     end
 
@@ -2622,11 +4178,12 @@ do
         if not camera then return end
 
         savedSubmergeY = currentRoot.Position.Y
+        savedSubmergeCFrame = currentRoot.CFrame
+        submergeCharacter = currentCharacter
+        submergeHumanoid = currentHumanoid
+        submergeRoot = currentRoot
         savedPlatformStand = currentHumanoid.PlatformStand
         savedAutoRotate = currentHumanoid.AutoRotate
-        savedCameraCFrame = camera.CFrame
-        savedCameraType = camera.CameraType
-        savedCameraSubject = camera.CameraSubject
 
         table.clear(originalCollision)
         for _, part in ipairs(currentCharacter:GetDescendants()) do
@@ -2677,17 +4234,25 @@ do
     local function toggleArmAnimation()
         if animationPlaying then
             animationPlaying = false
-            if animationTrack then animationTrack:Stop(0.15) end
-            setButtonState(armBtn, armStroke, false, "Arm Animation")
-        else
-            if not animationTrack then loadArmAnimation() end
             if animationTrack then
-                animationPlaying = true
-                animationTrack:Play(0.15)
-                setButtonState(armBtn, armStroke, true, "Arm Animation")
-            else
-                armBtn.Text = "Animation unavailable"
+                pcall(function() animationTrack:Stop(0.15) end)
             end
+            setButtonState(armBtn, armStroke, false, "Arm Animation")
+            return
+        end
+
+        if not animationTrack and not loadArmAnimation() then
+            armBtn.Text = "Animation unavailable"
+            return
+        end
+
+        local ok = pcall(function() animationTrack:Play(0.15) end)
+        if ok then
+            animationPlaying = true
+            setButtonState(armBtn, armStroke, true, "Arm Animation")
+        else
+            animationPlaying = false
+            armBtn.Text = "Animation unavailable"
         end
     end
 
@@ -2714,37 +4279,94 @@ do
         end
     end))
 
-    addConnection(LocalPlayer.CharacterAdded:Connect(function()
-        if submerged then
-            stopSubmerge(false)
+    addConnection(LocalPlayer.CharacterAdded:Connect(function(character)
+        -- Always clean up references to the previous character before loading the new one.
+        stopSubmerge(false)
+
+        if humanoidDiedConnection then
+            humanoidDiedConnection:Disconnect()
+            humanoidDiedConnection = nil
         end
         if animationTrack then
-            pcall(function() animationTrack:Stop() end)
+            pcall(function() animationTrack:Stop(0) end)
+            pcall(function() animationTrack:Destroy() end)
             animationTrack = nil
         end
+        if animationStoppedConnection then
+            animationStoppedConnection:Disconnect()
+            animationStoppedConnection = nil
+        end
+
+        local shouldResumeAnimation = animationPlaying
         animationPlaying = false
-        setButtonState(armBtn, armStroke, false, "Arm Animation")
-        task.wait(0.25)
-        loadArmAnimation()
+        task.spawn(function()
+            local humanoid = character:WaitForChild("Humanoid", 8)
+            if not humanoid or character ~= LocalPlayer.Character then
+                animationPlaying = false
+                setButtonState(armBtn, armStroke, false, "Arm Animation")
+                return
+            end
+
+            humanoidDiedConnection = humanoid.Died:Connect(function()
+                stopSubmerge(false)
+                animationPlaying = false
+                if animationTrack then
+                    pcall(function() animationTrack:Stop(0) end)
+                end
+                setButtonState(armBtn, armStroke, false, "Arm Animation")
+            end)
+
+            if loadArmAnimation(character) and shouldResumeAnimation then
+                animationPlaying = true
+                local played = pcall(function() animationTrack:Play(0.15) end)
+                if played then
+                    setButtonState(armBtn, armStroke, true, "Arm Animation")
+                else
+                    animationPlaying = false
+                    setButtonState(armBtn, armStroke, false, "Arm Animation")
+                end
+            else
+                animationPlaying = false
+                setButtonState(armBtn, armStroke, false, "Arm Animation")
+            end
+        end)
     end))
 
     cleanupSubmerge = function()
         stopSubmerge(false)
         animationPlaying = false
+        if humanoidDiedConnection then
+            humanoidDiedConnection:Disconnect()
+            humanoidDiedConnection = nil
+        end
+        if animationStoppedConnection then
+            animationStoppedConnection:Disconnect()
+            animationStoppedConnection = nil
+        end
         if animationTrack then
-            pcall(function() animationTrack:Stop() end)
+            pcall(function() animationTrack:Stop(0) end)
+            pcall(function() animationTrack:Destroy() end)
             animationTrack = nil
         end
+        setButtonState(armBtn, armStroke, false, "Arm Animation")
     end
 
     loadArmAnimation()
+    if currentHumanoid then
+        humanoidDiedConnection = currentHumanoid.Died:Connect(function()
+            stopSubmerge(false)
+            animationPlaying = false
+            if animationTrack then
+                pcall(function() animationTrack:Stop(0) end)
+            end
+            setButtonState(armBtn, armStroke, false, "Arm Animation")
+        end)
+    end
 end
 
 --========================================================
 -- CHARACTER REFRESH
 --========================================================
-local refreshingCharacter = false
-
 local function refreshCharacter()
     if refreshingCharacter then return end
 
@@ -2763,6 +4385,8 @@ local function refreshCharacter()
 
     local returnCFrame = oldRoot.CFrame
     refreshingCharacter = true
+    refreshCharacterGeneration = refreshCharacterGeneration + 1
+    local thisRefresh = refreshCharacterGeneration
 
     if cleanupSubmerge then
         pcall(cleanupSubmerge)
@@ -2772,7 +4396,7 @@ local function refreshCharacter()
     local finished = false
 
     local function restoreNewCharacter(newCharacter)
-        if finished then return end
+        if finished or thisRefresh ~= refreshCharacterGeneration or shuttingDown then return end
         finished = true
 
         task.spawn(function()
@@ -2791,11 +4415,11 @@ local function refreshCharacter()
                 characterAddedConnection:Disconnect()
                 characterAddedConnection = nil
             end
-            refreshingCharacter = false
+            if thisRefresh == refreshCharacterGeneration then refreshingCharacter = false end
         end)
     end
 
-    characterAddedConnection = LocalPlayer.CharacterAdded:Connect(restoreNewCharacter)
+    characterAddedConnection = addConnection(LocalPlayer.CharacterAdded:Connect(restoreNewCharacter))
 
     local died = pcall(function()
         oldHumanoid.Health = 0
@@ -2811,7 +4435,7 @@ local function refreshCharacter()
     end
 
     task.delay(15, function()
-        if not finished then
+        if not finished and thisRefresh == refreshCharacterGeneration then
             if characterAddedConnection then
                 characterAddedConnection:Disconnect()
                 characterAddedConnection = nil
@@ -2852,7 +4476,7 @@ minimizeBtn.MouseButton1Click:Connect(function()
         tabContents["Main"].Visible = true
         styleButton(tabButtons["Main"], true)
     end
-    local targetSize = minimized and UDim2.fromOffset(460, 42) or UDim2.fromOffset(460, 530)
+    local targetSize = minimized and UDim2.fromOffset(600, 42) or UDim2.fromOffset(600, 530)
     TweenService:Create(mainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = targetSize}):Play()
     minimizeBtn.Text = minimized and "+" or "—"
 end)
@@ -2882,4 +4506,4 @@ addConnection(UserInputService.InputEnded:Connect(function(input)
     end
 end))
 
-print("⚡ THEUNION HUB v3.3 (30 Pro RTX Shaders & Expanded Server Browser) Loaded Successfully!")
+print("⚡ THEUNION HUB — Core Stability Update loaded. Existing GUI and tabs retained.")
